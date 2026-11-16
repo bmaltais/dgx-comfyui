@@ -195,6 +195,6 @@ checkout (`.state/comfy.previous`).
 
 ## Status
 
-Written against upstream at `33e521b`. Tested on a real DGX Spark (GB10, driver 580.178, CUDA 13.0, 2026-11-16): fresh install including the sm_121 SageAttention build and the aarch64 onnxruntime wheel, a no-change re-run, `doctor`, and `run` serving the UI with SageAttention active. `update` to the newest release was run there too. Not yet exercised on the Spark: `service`, `backup`/`restore`, `recipe install`, and generating an image.
+Written against upstream at `33e521b`. Tested on a real DGX Spark (GB10, driver 580.178, CUDA 13.0, 2026-11-16): fresh install including the sm_121 SageAttention build and the aarch64 onnxruntime wheel, a no-change re-run, `doctor`, and `run` serving the UI with SageAttention active. `update` to the newest release and `recipe check` (sources reachable, sizes match) were run there too. Not yet exercised on the Spark: `service`, `tune`, `backup`/`restore`, `recipe install`, and generating an image.
 
 MIT. Derived from spark-comfyui, copyright (c) 2026 Bjarke Bolding; see `LICENSE`.
