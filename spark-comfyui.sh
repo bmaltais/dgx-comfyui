@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # spark-comfyui.sh: ComfyUI on a DGX Spark (GB10, sm_121) in one folder, with uv.
 #
-#   ./spark-comfyui.sh install   converge to the wanted state; safe to re-run, changes only what differs
-#   ./spark-comfyui.sh update    move ComfyUI to the newest upstream, then converge
-#   ./spark-comfyui.sh run [..]  launch ComfyUI (extra args go to main.py)
-#   ./spark-comfyui.sh doctor    read-only health report, changes nothing
+#   ./spark-comfyui.sh install            converge to the wanted state; safe to re-run, changes only what differs
+#   ./spark-comfyui.sh update             newest ComfyUI release + its dependencies, then converge
+#   ./spark-comfyui.sh run [..]           launch ComfyUI in the foreground (extra args go to main.py)
+#   ./spark-comfyui.sh doctor             read-only health report, changes nothing
+#   ./spark-comfyui.sh status [--watch [SEC]]   one-page glance, or a live dashboard with sparklines
+#   ./spark-comfyui.sh service [--disable]      run ComfyUI in the background, restarted on crash and at boot
+#   ./spark-comfyui.sh stop | logs [-f]         stop it; read its service log
+#   ./spark-comfyui.sh backup [--with-output] [FILE] | restore FILE [--force]
+#   ./spark-comfyui.sh recipe list|show|check|install|capture   a workflow's nodes and models, as data
 #
 # Derived from https://github.com/bjarkebolding/spark-comfyui (MIT), which does the same
 # in a container. Everything here lives under this script's folder: uv, Python, venv,
@@ -415,8 +420,22 @@ acquire_lock() {
   flock -n "$@" 9 || die "another install, update or run holds the lock (stop ComfyUI first to change it)"
 }
 
+UNIT="spark-comfyui.service"
+UNIT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT"
+svc_active() { command -v systemctl >/dev/null && systemctl --user is-active --quiet "$UNIT" 2>/dev/null; }
+SERVICE_PAUSED=0
+resume_service() { if (( SERVICE_PAUSED )); then systemctl --user start "$UNIT" && printf '  \033[36m·\033[0m service restarted\n'; fi; }
+pause_service() {   # the running service holds the lock; stop it while we change things, restart it after
+  if svc_active; then
+    SERVICE_PAUSED=1; trap resume_service EXIT
+    info "stopping the $UNIT service while this runs (it restarts afterwards)"
+    systemctl --user stop "$UNIT"
+  fi
+}
+
 cmd_install() {
   MODE=install
+  pause_service
   acquire_lock -x
   log "Host"
   require host "host" || die "fix the host problem above and re-run"
@@ -443,6 +462,7 @@ cmd_install() {
 }
 
 cmd_update() {
+  pause_service
   acquire_lock -x
   [[ -d "$COMFY/.git" ]] || die "not installed yet: run ./spark-comfyui.sh install"
   setup_env
@@ -511,9 +531,233 @@ cmd_run() {
   [[ "$BIND_ADDR" == 0.0.0.0 ]] && warn "listening on every interface and ComfyUI has no login; set BIND_ADDR = 127.0.0.1 in spark-comfyui.conf for this box only"
   log "Launching ComfyUI on $BIND_ADDR:$PORT"
   cd "$COMFY"
+  echo $$ > "$STATE/comfyui.pid"   # the shell becomes python below, so this stays the server's pid
   exec python main.py --listen "$BIND_ADDR" --port "$PORT" --base-directory "$DATA" \
     --enable-manager --preview-method auto --disable-pinned-memory \
     "${attn[@]}" "${flags[@]}" "$@"
+}
+
+
+# ---- recipes (lib/recipes.sh, ported from upstream) ---------------------------------------
+LIB_DIR="$ROOT/lib"; RECIPES_DIR="$ROOT/recipes"
+hdr() { log "$@"; }
+resolve_mounts() { :; }
+_mount_path() { case "$1" in models) printf '%s' "$DATA/models" ;; user) printf '%s' "$DATA/user" ;; *) return 1 ;; esac; }
+cmd_recipe() {
+  [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: ./spark-comfyui.sh install"
+  command -v wget >/dev/null || die "wget is missing: sudo apt install wget"
+  setup_env
+  # shellcheck source=lib/recipes.sh
+  source "$LIB_DIR/recipes.sh"
+  _recipe_cmd "$@"
+}
+
+# ---- status, watch ---------------------------------------------------------------------
+server_pid() {
+  local pid; pid="$(cat "$STATE/comfyui.pid" 2>/dev/null || true)"
+  [[ -n "$pid" && -r "/proc/$pid/cmdline" ]] && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'main.py' && printf '%s' "$pid"
+}
+server_state() {   # prints: stopped | starting | up
+  local pid; pid="$(server_pid || true)"
+  [[ -n "$pid" ]] || { echo stopped; return; }
+  if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$PORT/queue" 2>/dev/null; then echo up; else echo starting; fi
+}
+queue_counts() {   # "running pending", 0 0 when the server is down
+  curl -fsS -m 3 "http://127.0.0.1:$PORT/queue" 2>/dev/null | "$PY" -I -c 'import json,sys
+d=json.load(sys.stdin); print(len(d.get("queue_running",[])), len(d.get("queue_pending",[])))' 2>/dev/null || echo "0 0"
+}
+num() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] && printf '%s' "$1" || printf 0; }
+gpu_sample() {   # "temp power clock util" (0 where the driver reports N/A)
+  local o t p c u
+  o="$(nvidia-smi --query-gpu=temperature.gpu,power.draw,clocks.sm,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 || true)"
+  IFS=',' read -r t p c u <<<"$o"
+  printf '%s %s %s %s' "$(num "${t// /}")" "$(num "${p// /}")" "$(num "${c// /}")" "$(num "${u// /}")"
+}
+mem_sample() { free -m | awk '/^Mem:/{print $3, $2}'; }   # used total, MB
+spark() {   # sparkline of the numbers given as arguments
+  local -a v=("$@"); local min max x i out="" bars=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+  (( ${#v[@]} )) || return 0
+  min="${v[0]}"; max="${v[0]}"
+  for x in "${v[@]}"; do (( ${x%.*} < ${min%.*} )) && min="$x"; (( ${x%.*} > ${max%.*} )) && max="$x"; done
+  for x in "${v[@]}"; do
+    if (( ${max%.*} == ${min%.*} )); then i=0; else i=$(( (${x%.*} - ${min%.*}) * 7 / (${max%.*} - ${min%.*}) )); fi
+    out+="${bars[$i]}"
+  done
+  printf '%s' "$out"
+}
+cmd_status() {
+  setup_env
+  local watch=0 sec=3
+  if [[ "${1:-}" == --watch ]]; then watch=1; [[ "${2:-}" =~ ^[0-9]+$ ]] && sec="$2"; fi
+  if (( watch )); then status_watch "$sec"; return; fi
+  local st ip
+  st="$(server_state)"; ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  log "ComfyUI"
+  case "$st" in
+    up) ok "running (pid $(server_pid)): http://${ip:-localhost}:$PORT  (binds $BIND_ADDR)" ;;
+    starting) info "starting: process is up, server not answering yet" ;;
+    *) info "not running: ./spark-comfyui.sh run, or ./spark-comfyui.sh service" ;;
+  esac
+  if command -v systemctl >/dev/null && [[ -f "$UNIT_FILE" ]]; then
+    info "service: $(systemctl --user is-active "$UNIT" 2>/dev/null || true), $(systemctl --user is-enabled "$UNIT" 2>/dev/null || true)"
+  else info "service: not installed (./spark-comfyui.sh service)"; fi
+  [[ -d "$COMFY/.git" ]] || { warn "not installed yet: ./spark-comfyui.sh install"; return 0; }
+  info "version: $(comfy_label); torch $(dist_version torch); sageattention $(dist_version sageattention || true)"
+  local want; want="$(resolve_ref 2>/dev/null || true)"
+  if [[ "$COMFY_REF" == latest && -n "$want" && "$(git -C "$COMFY" describe --tags --exact-match 2>/dev/null || true)" != "$want" ]]; then
+    info "newer release available: $want  (./spark-comfyui.sh update)"
+  fi
+  log "Machine"
+  read -r t p c u <<<"$(gpu_sample)"
+  info "gpu: ${t}°C, ${p}W, ${c}MHz, ${u}% busy"
+  read -r used total <<<"$(mem_sample)"
+  info "unified memory: $((used/1024))G used of $((total/1024))G"
+  info "disk: $(df -h --output=avail,pcent "$ROOT" | tail -1 | awk '{print $1" free ("$2" used)"}')   models: $(du -sh "$DATA/models" 2>/dev/null | cut -f1)"
+  if read -r r q <<<"$(queue_counts)"; [[ "$st" == up ]]; then info "queue: $r running, $q pending"; fi
+  [[ -f "$ROOT/spark-comfyui.conf" ]] && info "config overrides: $(grep -vE '^\s*(#|$)' "$ROOT/spark-comfyui.conf" | tr '\n' ';')"
+  return 0
+}
+status_watch() {
+  local sec="$1" max=40 t p c u used total r q n=0 st
+  local -a ht=() hp=() hc_=() hu=() hm=() hg=()
+  command -v tput >/dev/null && tput civis 2>/dev/null || true
+  trap 'tput cnorm 2>/dev/null || true; printf "\n"; exit 0' INT TERM
+  trap 'tput cnorm 2>/dev/null || true' EXIT
+  : >> "$STATE/status.log"
+  while true; do
+    read -r t p c u <<<"$(gpu_sample)"; read -r used total <<<"$(mem_sample)"
+    st="$(server_state)"; r=0; q=0; [[ "$st" == up ]] && read -r r q <<<"$(queue_counts)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Is)" "$t" "$p" "$c" "$u" "$used" "$r" "$q" >> "$STATE/status.log"
+    ht+=("$t"); hp+=("${p%.*}"); hc_+=("$c"); hu+=("$u"); hm+=("$((used/1024))"); hg+=("$r")
+    n=${#ht[@]}; if (( n > max )); then ht=("${ht[@]:1}"); hp=("${hp[@]:1}"); hc_=("${hc_[@]:1}"); hu=("${hu[@]:1}"); hm=("${hm[@]:1}"); hg=("${hg[@]:1}"); fi
+    printf '\033[H\033[2J'
+    printf '\033[1m spark-comfyui  %s  %s · every %ss · Ctrl+C to leave\033[0m\n\n' "$st" "$(comfy_label)" "$sec"
+    printf '  \033[36m── GPU ──────────────────────────────────────────────\033[0m\n'
+    printf '  temp   %5s°C  %s\n' "$t" "$(spark "${ht[@]}")"
+    printf '  power  %5sW   %s\n' "$p" "$(spark "${hp[@]}")"
+    printf '  sm clk %5sMHz %s\n' "$c" "$(spark "${hc_[@]}")"
+    printf '  busy   %5s%%   %s\n' "$u" "$(spark "${hu[@]}")"
+    printf '  \033[36m── SYSTEM ───────────────────────────────────────────\033[0m\n'
+    printf '  unified %4sG of %sG  %s\n' "$((used/1024))" "$((total/1024))" "$(spark "${hm[@]}")"
+    printf '  \033[36m── QUEUE ────────────────────────────────────────────\033[0m\n'
+    printf '  running %s, pending %s  %s\n' "$r" "$q" "$(spark "${hg[@]}")"
+    printf '\n  samples are kept in .state/status.log (the trail to read after a silent reboot)\n'
+    sleep "$sec"
+  done
+}
+
+# ---- background service ----------------------------------------------------------------
+cmd_service() {
+  command -v systemctl >/dev/null || die "systemd is not available here"
+  if [[ "${1:-}" == --disable ]]; then
+    systemctl --user disable --now "$UNIT" 2>/dev/null || true
+    rm -f "$UNIT_FILE"; systemctl --user daemon-reload
+    ok "service removed; ComfyUI no longer starts at boot"; return 0
+  fi
+  [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: ./spark-comfyui.sh install"
+  local want
+  want="[Unit]
+Description=ComfyUI (spark-comfyui-uv, $ROOT)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+ExecStart=$SELF run $*
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target"
+  if [[ -f "$UNIT_FILE" ]] && ! grep -qF "WorkingDirectory=$ROOT" "$UNIT_FILE"; then
+    die "$UNIT already serves another install ($(sed -n 's/^WorkingDirectory=//p' "$UNIT_FILE")); run its './spark-comfyui.sh service --disable' first"
+  fi
+  mkdir -p "${UNIT_FILE%/*}"
+  if [[ -f "$UNIT_FILE" && "$(cat "$UNIT_FILE")" == "$want" ]]; then ok "unit already in place"
+  else printf '%s\n' "$want" > "$UNIT_FILE.tmp" && mv -f "$UNIT_FILE.tmp" "$UNIT_FILE"; systemctl --user daemon-reload; did "unit written to $UNIT_FILE"; fi
+  # Let it run without a login session, and start at boot (needs permission to enable lingering).
+  if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != yes ]]; then
+    if loginctl enable-linger "$USER" 2>/dev/null; then did "lingering enabled: starts at boot, survives logout"
+    else warn "could not enable lingering; run: sudo loginctl enable-linger $USER (otherwise it stops when you log out)"; fi
+  fi
+  systemctl --user enable --now "$UNIT" 2>&1 | sed 's/^/  /' || true
+  info "follow it: ./spark-comfyui.sh logs -f    stop: ./spark-comfyui.sh stop    status: ./spark-comfyui.sh status"
+}
+cmd_stop() {
+  if svc_active; then systemctl --user stop "$UNIT"; ok "service stopped (it starts again at boot; remove it with: service --disable)"; return 0; fi
+  local pid i; pid="$(server_pid || true)"
+  [[ -n "$pid" ]] || { info "not running"; return 0; }
+  kill -TERM "$pid"
+  for i in $(seq 1 30); do [[ -d "/proc/$pid" ]] || { ok "stopped"; return 0; }; sleep 1; done
+  die "pid $pid ignored SIGTERM for 30 s; stop it by hand"
+}
+cmd_logs() {
+  command -v journalctl >/dev/null && [[ -f "$UNIT_FILE" ]] || die "no service installed; the foreground 'run' prints to its own terminal. Set one up with: ./spark-comfyui.sh service"
+  exec journalctl --user -u "$UNIT" --no-pager "${@:--n 100}"
+}
+
+# ---- backup, restore -------------------------------------------------------------------
+cmd_backup() {
+  local with_out=0 file="" a T parts=() rc=0
+  for a in "$@"; do case "$a" in --with-output) with_out=1 ;; -*) die "unknown option $a" ;; *) file="$a" ;; esac; done
+  [[ -d "$DATA" ]] || die "nothing to back up yet"
+  mkdir -p "$ROOT/backups"
+  file="${file:-$ROOT/backups/comfyui-backup-$(date +%Y%m%d-%H%M%S).tgz}"
+  T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
+  mkdir -p "$T/manifest"
+  local d url sha
+  for d in "$DATA"/custom_nodes/*/; do
+    [[ -d "$d" ]] || continue
+    if [[ -d "$d/.git" ]]; then
+      url="$(git -C "$d" remote get-url origin 2>/dev/null || true)"; sha="$(git -C "$d" rev-parse HEAD 2>/dev/null || true)"
+      printf '%s\t%s\t%s\n' "$(basename "$d")" "$url" "$sha" >> "$T/manifest/custom_nodes.tsv"
+    else
+      warn "custom node $(basename "$d") is not a git checkout; it is not in the backup"
+    fi
+  done
+  : >> "$T/manifest/custom_nodes.tsv"
+  find -L "$DATA/models" -type f -printf '%P\t%s\n' 2>/dev/null | sort > "$T/manifest/models.tsv" || true
+  for d in data/user data/input; do [[ -d "$ROOT/$d" ]] && parts+=("$d"); done
+  (( with_out )) && [[ -d "$DATA/output" ]] && parts+=(data/output)
+  [[ -f "$ROOT/spark-comfyui.conf" ]] && parts+=(spark-comfyui.conf)
+  tar -czf "$file.partial" -C "$ROOT" "${parts[@]}" -C "$T" manifest || rc=$?
+  (( rc <= 1 )) || { rm -f "$file.partial"; die "tar failed ($rc)"; }   # 1 = a file changed while reading: fine on a live system
+  mv -f "$file.partial" "$file"
+  ok "backup: $file ($(du -h "$file" | cut -f1)); models are listed, not archived"
+}
+cmd_restore() {
+  local file="" force=0 a
+  for a in "$@"; do case "$a" in --force) force=1 ;; -*) die "unknown option $a" ;; *) file="$a" ;; esac; done
+  [[ -f "$file" ]] || die "usage: ./spark-comfyui.sh restore FILE [--force]"
+  tar -tzf "$file" manifest/custom_nodes.tsv >/dev/null 2>&1 || die "$file is not a spark-comfyui backup"
+  if [[ ! -x "$PY" || ! -d "$COMFY/.git" ]]; then log "Installing first"; "$SELF" install || die "install failed"; fi
+  setup_env; acquire_lock -x
+  local T keep=(--skip-old-files); (( force )) && keep=(--overwrite)
+  T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
+  log "Restoring content"
+  tar -xzf "$file" "${keep[@]}" -C "$ROOT" --exclude='manifest' --exclude='manifest/*'
+  tar -xzf "$file" -C "$T" manifest
+  ok "workflows, settings, inputs and config restored$( (( force )) || echo ' (existing files kept; --force overwrites)')"
+  log "Custom nodes"
+  local name url sha
+  while IFS=$'\t' read -r name url sha; do
+    [[ -n "$name" ]] || continue
+    if [[ -d "$DATA/custom_nodes/$name" ]]; then ok "$name already present"; continue; fi
+    [[ -n "$url" ]] || { warn "$name has no remote; reinstall it from Manager"; continue; }
+    if git clone -q "$url" "$DATA/custom_nodes/$name" && git -C "$DATA/custom_nodes/$name" checkout -q "$sha"; then
+      [[ -f "$DATA/custom_nodes/$name/requirements.txt" ]] && uvpip install -q -r "$DATA/custom_nodes/$name/requirements.txt" -c "$STATE/constraints.txt" || true
+      did "$name cloned at ${sha:0:9}"
+    else bad "$name could not be cloned from $url"; fi
+  done < "$T/manifest/custom_nodes.tsv"
+  log "Models"
+  local rel size missing=0 total=0
+  while IFS=$'\t' read -r rel size; do
+    [[ -n "$rel" ]] || continue
+    if [[ ! -e "$DATA/models/$rel" ]]; then missing=$((missing+1)); total=$((total+size)); printf '  missing  models/%s  (%s)\n' "$rel" "$(numfmt --to=iec "$size")"; fi
+  done < "$T/manifest/models.tsv"
+  if (( missing )); then info "$missing model file(s), $(numfmt --to=iec "$total"), were not in the backup: copy or download them"; else ok "every model in the backup is present"; fi
+  (( PROBLEMS == 0 )) || exit 1
 }
 
 summary() {
@@ -525,12 +769,19 @@ summary() {
   (( PROBLEMS == 0 )) || exit 1
 }
 
-usage() { sed -n '2,8p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,13p' "$SELF" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in
   install)  shift; cmd_install "$@" ;;
   update)   shift; cmd_update "$@" ;;
   run)      shift; cmd_run "$@" ;;
   doctor)   shift; cmd_doctor "$@" ;;
+  status)   shift; cmd_status "$@" ;;
+  service)  shift; cmd_service "$@" ;;
+  stop)     shift; cmd_stop "$@" ;;
+  logs)     shift; cmd_logs "$@" ;;
+  backup)   shift; setup_env; cmd_backup "$@" ;;
+  recipe)   shift; cmd_recipe "$@" ;;
+  restore)  shift; cmd_restore "$@" ;;
   ""|-h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
