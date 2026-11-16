@@ -10,6 +10,7 @@
 #   ./spark-comfyui.sh stop | logs [-f]         stop it; read its service log
 #   ./spark-comfyui.sh backup [--with-output] [FILE] | restore FILE [--force]
 #   ./spark-comfyui.sh recipe list|show|check|install|capture   a workflow's nodes and models, as data
+#   ./spark-comfyui.sh tune [--clock-cap MHZ] [--persist] | tune --revert   host stability (uses sudo)
 #
 # Derived from https://github.com/bjarkebolding/spark-comfyui (MIT), which does the same
 # in a container. Everything here lives under this script's folder: uv, Python, venv,
@@ -496,6 +497,10 @@ cmd_doctor() {
   [[ "$SPARK_ATTENTION" == sage ]] && { converge sage "sage" || true; }
   converge ort "onnx" || true
   if [[ -f "$STATE/comfy.previous" ]]; then info "previous ComfyUI commit: $(cat "$STATE/comfy.previous")"; fi
+  if [[ -n "$(swapon --noheadings 2>/dev/null)" ]]; then warn "swap is enabled: heavy workloads can freeze a Spark (./spark-comfyui.sh tune)"; else ok "swap disabled on the host"; fi
+  if grep -qx 'After=multi-user.target' /etc/systemd/system/comfyui-tune.service 2>/dev/null; then
+    warn "comfyui-tune.service waits for the end of boot and may never run: rewrite it with ./spark-comfyui.sh tune --persist"
+  fi
   if have_gpu; then info "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"; else warn "no GPU visible: kernel gates skipped"; fi
   summary doctor
 }
@@ -537,6 +542,200 @@ cmd_run() {
     "${attn[@]}" "${flags[@]}" "$@"
 }
 
+
+# ---- tune: host stability (ported from upstream, field-validated on GB10) ------------
+# The only part of this tool that uses sudo and touches the host outside this folder. Opt-in.
+# The inverse of cmd_tune, step for step, ordered by risk rather than by
+# mirroring: the persisted unit goes FIRST so that a failure anywhere below
+# leaves a box that at least stops re-applying the tuning on next boot, and
+# swap goes LAST because re-enabling it is the one step that puts the freeze
+# risk back, so its warning should be the last thing on screen. Same
+# skip-if-already-in-the-target-state rule as tune, so a second --revert asks
+# for no password it does not need.
+_tune_revert() {
+  log "Reverting DGX Spark system tuning"
+
+  # 1) The persisted unit, if --persist ever wrote one.
+  local unit=/etc/systemd/system/comfyui-tune.service
+  if [[ -f "$unit" ]]; then
+    sudo systemctl disable --now comfyui-tune.service >/dev/null 2>&1 || true
+    sudo rm -f "$unit"
+    sudo systemctl daemon-reload
+    echo "  comfyui-tune.service removed (tuning no longer re-applies at boot)"
+  else
+    echo "  no persisted tuning unit"
+  fi
+
+  # 2) GPU clocks. NOTHING reports an -lgc lock range: the clocks_event_reasons
+  #    fields cover the applications-clocks lever and the power cap, not this
+  #    one, and GB10 reports N/A for most of the clock block anyway. So this
+  #    resets unconditionally instead of pretending to detect. -rgc on a GPU
+  #    that was never locked is a no-op, which is what makes that honest.
+  if sudo nvidia-smi -rgc >/dev/null 2>&1; then
+    echo "  GPU clocks unlocked (reset to the driver default)"
+  else
+    warn "could not reset GPU clocks — 'sudo nvidia-smi -rgc' failed"
+  fi
+
+  # 3) Persistence mode. This one IS queryable, so it skips cleanly.
+  if [[ "$(nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null)" == "Enabled" ]]; then
+    sudo nvidia-smi -pm 0 >/dev/null && echo "  persistence mode: off"
+  else
+    echo "  persistence mode: already off"
+  fi
+
+  # 4) Swappiness. tune appends one fixed line, so deleting that exact line is
+  #    a complete undo of the file. The live value it displaced was never
+  #    recorded anywhere, so this restores the kernel default rather than
+  #    inventing a number the box may never have had.
+  if grep -q '^vm\.swappiness=10$' /etc/sysctl.conf 2>/dev/null; then
+    sudo sed -i '/^vm\.swappiness=10$/d' /etc/sysctl.conf
+    echo "  vm.swappiness=10 removed from /etc/sysctl.conf"
+    # The live value is reset only because OUR line was there. Without that
+    # proof a swappiness of 10 is somebody else's setting — a drop-in under
+    # /etc/sysctl.d, a distro default — and overwriting it would be this
+    # command reaching past what it put there.
+    if [[ "$(sysctl -n vm.swappiness 2>/dev/null)" == "10" ]]; then
+      sudo sysctl -w vm.swappiness=60 >/dev/null
+      echo "  vm.swappiness=60 (the kernel default)"
+    fi
+  else
+    echo "  no vm.swappiness line of ours in /etc/sysctl.conf"
+  fi
+
+  # 5) Swap. 'swapoff -a' never touched /etc/fstab, so 'swapon -a' restores
+  #    exactly what the box shipped with. A box with no swap entry has nothing
+  #    to restore, and that is a fact to report, not a failure.
+  local swap_back=0
+  if [[ -n "$(swapon --noheadings 2>/dev/null)" ]]; then
+    echo "  swap already enabled"; swap_back=1
+  else
+    sudo swapon -a 2>/dev/null || true
+    if [[ -n "$(swapon --noheadings 2>/dev/null)" ]]; then
+      echo "  swap re-enabled from /etc/fstab"; swap_back=1
+    else
+      echo "  no swap entry in /etc/fstab — nothing to re-enable"
+    fi
+  fi
+  # Only warn when swap is actually back on: on a box that has none, saying
+  # so would be a false alarm about a state that does not exist.
+  (( swap_back )) && warn "swap is on again. On unified memory a workload that
+approaches the limit thrashes instead of getting a clean OOM kill, and the box
+can freeze with no logs — re-run '$SELF tune' before the next heavy generation."
+  return 0
+}
+
+cmd_tune() {
+  local clock_cap="" persist=0 revert=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --clock-cap) clock_cap="${2:?--clock-cap needs a MHz value, e.g. 2100}"; shift 2 ;;
+      --persist)   persist=1; shift ;;
+      --revert)    revert=1; shift ;;
+      *) die "Unknown tune option: $1 (use --clock-cap MHZ, --persist or --revert)" ;;
+    esac
+  done
+  if (( revert )); then
+    [[ -z "$clock_cap" && "$persist" -eq 0 ]] \
+      || die "--revert undoes the tuning, so it cannot be combined with
+--clock-cap or --persist — run it on its own"
+    _tune_revert
+    return 0
+  fi
+  # Validate up front: a bad value would otherwise die mid-run on nvidia-smi's
+  # error, skipping the remaining tune steps. 300 is the -lgc floor used below.
+  if [[ -n "$clock_cap" ]]; then
+    if ! [[ "$clock_cap" =~ ^[0-9]+$ ]] || (( clock_cap < 300 || clock_cap > 4000 )); then
+      die "--clock-cap needs a MHz value between 300 and 4000, e.g. 2100 (got: $clock_cap)"
+    fi
+  fi
+
+  log "Applying DGX Spark system tuning"
+
+  # 1) Swap off. On unified memory, approaching the limit doesn't OOM-kill
+  #    cleanly — it thrashes swap, saturates the bus and silently freezes
+  #    the whole box. No swap = clean OOM kill instead. Each sudo step below
+  #    is skipped if the system's already in the target state, so re-running
+  #    tune (e.g. after a reboot without --persist) doesn't ask for a
+  #    password it doesn't need.
+  if [[ -n "$(swapon --noheadings 2>/dev/null)" ]]; then
+    sudo swapoff -a
+    echo "  swap disabled"
+  else
+    echo "  swap already disabled"
+  fi
+  if [[ "$(sysctl -n vm.swappiness 2>/dev/null)" != "10" ]]; then
+    sudo sysctl -w vm.swappiness=10 >/dev/null
+  fi
+  if grep -q '^vm.swappiness=10' /etc/sysctl.conf 2>/dev/null; then
+    echo "  vm.swappiness=10 (already set in /etc/sysctl.conf)"
+  else
+    echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf >/dev/null
+    echo "  vm.swappiness=10 (written to /etc/sysctl.conf — survives reboot on its own)"
+  fi
+
+  # 2) Driver persistence mode: avoids re-init latency between runs.
+  if [[ "$(nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null)" == "Enabled" ]]; then
+    echo "  persistence mode: already on"
+  else
+    sudo nvidia-smi -pm 1 >/dev/null && echo "  persistence mode: on"
+  fi
+
+  # 3) Optional clock cap. GB10 idles ~14W and spikes to ~85W instantly when
+  #    denoising starts; on some units that trips overcurrent protection ->
+  #    instant hard reboot with NO logs. Capping to ~2100 MHz holds ~50W and
+  #    eliminated the crashes in community testing (power limit via
+  #    'nvidia-smi -pl' is N/A on GB10, so clocks are the only lever).
+  if [[ -n "$clock_cap" ]]; then
+    sudo nvidia-smi -lgc 300,"$clock_cap" \
+      && echo "  GPU clocks locked to 300-${clock_cap} MHz"
+  else
+    echo "  (no clock cap requested — if you get silent hard reboots under"
+    echo "   heavy video generation, re-run: $SELF tune --clock-cap 2100)"
+  fi
+
+  # 4) Optionally persist across reboots (swapoff and -lgc do not survive).
+  if [[ "$persist" -eq 1 ]]; then
+    local unit=/etc/systemd/system/comfyui-tune.service lgc_line=""
+    if [[ -n "$clock_cap" ]]; then
+      lgc_line="ExecStart=/usr/bin/nvidia-smi -lgc 300,$clock_cap"
+    elif [[ -f "$unit" ]]; then
+      # Rewriting the unit without --clock-cap must not silently drop a
+      # previously persisted cap: losing it re-exposes the overcurrent
+      # hard-reboot the cap exists to prevent. Carry the old line over.
+      lgc_line="$(grep -m1 '^ExecStart=.*nvidia-smi -lgc' "$unit" 2>/dev/null || true)"
+      [[ -n "$lgc_line" ]] \
+        && echo "  keeping previously persisted clock cap (${lgc_line##*-lgc })"
+    fi
+    # Ordered on what the steps need, never After=multi-user.target. That
+    # target is only reached once the whole boot finishes, and on a headless
+    # DGX OS box plymouth-quit-wait can hold it for hours or for good: on
+    # sparky the unit ran 6h after one boot and never during the next
+    # (2026-10-25), with swap on the whole time. swap.target means swapoff has
+    # the fstab swap to turn off; nvidia-persistenced starts with the driver.
+    # WantedBy below only says "at boot", it does not order anything.
+    sudo tee "$unit" >/dev/null <<UNIT
+[Unit]
+Description=DGX Spark tuning for ComfyUI (swap off, persistence mode, clocks)
+After=swap.target nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/swapoff -a
+ExecStart=/usr/bin/nvidia-smi -pm 1
+$lgc_line
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload
+    sudo systemctl enable comfyui-tune.service >/dev/null
+    echo "  tuning persisted across reboots (comfyui-tune.service)"
+  else
+    warn "the swap-off and clock-cap settings do NOT survive a reboot on their
+own (vm.swappiness above already does) — add --persist to make all of it permanent"
+  fi
+}
 
 # ---- recipes (lib/recipes.sh, ported from upstream) ---------------------------------------
 LIB_DIR="$ROOT/lib"; RECIPES_DIR="$ROOT/recipes"
@@ -769,7 +968,7 @@ summary() {
   (( PROBLEMS == 0 )) || exit 1
 }
 
-usage() { sed -n '2,13p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in
   install)  shift; cmd_install "$@" ;;
   update)   shift; cmd_update "$@" ;;
@@ -781,6 +980,7 @@ case "${1:-}" in
   logs)     shift; cmd_logs "$@" ;;
   backup)   shift; setup_env; cmd_backup "$@" ;;
   recipe)   shift; cmd_recipe "$@" ;;
+  tune)     shift; cmd_tune "$@" ;;
   restore)  shift; cmd_restore "$@" ;;
   ""|-h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;

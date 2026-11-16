@@ -81,7 +81,7 @@ git clone https://github.com/bmaltais/spark-comfyui-uv.git ComfyUI && cd ComfyUI
 
 A DGX Spark on DGX OS (r580 driver) with the CUDA 13.0 toolkit at `/usr/local/cuda`, plus `git`,
 `curl`, `g++`, `libgl1` and `libglib2.0-0t64`, which DGX OS ships. `install` checks all of it first
-and prints the exact `apt` line for anything missing. It never runs `sudo`.
+and prints the exact `apt` line for anything missing. It never runs `sudo` itself (only `tune`, which you run on purpose, does).
 
 ### If something fails
 
@@ -107,6 +107,7 @@ and prints the exact `apt` line for anything missing. It never runs `sudo`.
 | `logs [-f]` | The service's log (journald). |
 | `backup [--with-output] [FILE]` | A small `.tgz` in `backups/`: workflows and settings (`data/user`), `data/input`, your `spark-comfyui.conf`, the custom-node set (git URL and commit) and a list of your models. Models are listed, never archived. Safe while running. |
 | `restore FILE [--force]` | Installs if needed, puts the content back (existing files kept unless `--force`), re-clones custom nodes at their commits and lists models that are missing. |
+| `tune [--clock-cap MHZ] [--persist]` <br> `tune --revert` | Host stability for the Spark, the one command that uses `sudo` and changes the machine outside this folder: swap off (on unified memory a workload near the limit thrashes swap and freezes the box instead of getting a clean out-of-memory kill), `vm.swappiness=10`, driver persistence mode, and an optional clock cap (`--clock-cap 2100` stops the silent hard reboots some units get when the GPU jumps from idle to ~85 W). `--persist` adds a boot unit (`comfyui-tune.service`) so it survives reboots. `--revert` puts everything back: swap on, clocks unlocked, persistence off, the unit and the sysctl line removed. Each step is skipped if already in place, so a re-run asks for no password it doesn't need. `doctor` warns while swap is on. |
 | `recipe list\|show\|check\|install\|capture` | Everything a workflow needs, as data: its custom nodes and every model with destination, size and sha256. `install` downloads what's missing (resumable, hash-verified), installs the nodes through Manager's CLI and drops the workflow into `data/user/default/workflows`. `capture NAME` writes a recipe from a workflow that already runs here. Gated downloads read `HF_TOKEN` / `CIVITAI_TOKEN`. See `recipes/README.md`. |
 
 An `install`, `update` and `run` hold a lock, so you can't change the install under a running ComfyUI.
@@ -168,14 +169,14 @@ Start with `./spark-comfyui.sh doctor`; every failure names its fix.
 - **CPU onnxruntime sneaked in** (a node's requirements pulled it): `run` and `install` detect it and put the GPU wheel back.
 - **SageAttention check fails at `run`:** it refuses to start rather than run slow. Run `./spark-comfyui.sh install` (rebuilds it, about 5 minutes), or set `SPARK_ATTENTION = sdpa`.
 - **LTX-2.3 audio workflows fail with `Input type (float) and bias type (c10::BFloat16)`:** set `SPARK_BF16_VAE = 0` in `spark-comfyui.conf`. The audio VAE can't run under `--bf16-vae`; the unet and text-encoder speedups are kept.
-- **Silent hard reboot during video generation:** leave `status --watch` running, reproduce, then read the last lines of `.state/status.log`. A power spike right before it dies points at overcurrent; upstream's `tune --clock-cap 2100` is the fix and is not ported (see below), so apply it by hand with `sudo nvidia-smi -lgc 0,2100`.
-- **The machine freezes near the memory limit:** swap thrash on unified memory. Turn swap off (`sudo swapoff -a`) and consider `SPARK_RESERVE_VRAM`.
+- **Silent hard reboot during video generation:** leave `status --watch` running, reproduce, then read the last lines of `.state/status.log`. A power spike right before it dies points at overcurrent; the fix is `./spark-comfyui.sh tune --clock-cap 2100 --persist`.
+- **The machine freezes near the memory limit:** swap thrash on unified memory. Run `./spark-comfyui.sh tune` (swap off) and consider `SPARK_RESERVE_VRAM`; `doctor` warns while swap is on.
 - **The disk fills up:** models are the big part. `du -sh data/models/*`; the build leftovers in `build/` and `.cache/` can be deleted and are rebuilt on demand.
 - **The UI is reachable by anyone on the LAN:** that is the default. Set `BIND_ADDR = 127.0.0.1` and use an SSH tunnel.
 
 ## Security notes
 
-- **No container confinement.** Custom nodes run as you (see the next section). Everything else is unprivileged: nothing here uses `sudo`, and the one system-level change, the optional user service, is a file in `~/.config/systemd/user/`.
+- **No container confinement.** Custom nodes run as you (see the next section). Everything else is unprivileged except `tune`, which you run on purpose and which uses `sudo` to change swap, GPU settings, `/etc/sysctl.conf` and, with `--persist`, `/etc/systemd/system/comfyui-tune.service`; `tune --revert` undoes all of it. The optional background service is a file in `~/.config/systemd/user/`.
 - **ComfyUI has no authentication.** Manager runs in `personal_cloud` mode, fine on a trusted LAN. Do not expose the port to the internet.
 - **What gets downloaded and run at install time:** uv (from astral.sh, only if absent), Python 3.12 (from uv), PyTorch (download.pytorch.org), the SageAttention source pinned to one commit, and the onnxruntime wheel pinned by sha256. `recipe install` verifies every model's sha256 before it moves into place.
 - **Update the tool carefully:** `install.sh` is short and readable before you pipe it to `bash`; the repo is MIT.
@@ -188,8 +189,7 @@ user with access to your home directory. Install nodes you'd be willing to run a
 
 ## Not ported
 
-Left out on purpose; the upstream script has them if you want them: `tune` (swap off, persistence
-mode, clock cap: these need `sudo`), `prune` and image tags (there is no image), and the patch list
+Left out on purpose; the upstream script has them if you want them: `prune` and image tags (there is no image), and the patch list
 and node list (a recipe installs nodes now, and Manager does it from the UI). Rollback is the git
 checkout (`.state/comfy.previous`).
 
