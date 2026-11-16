@@ -10,8 +10,7 @@ type, and that inference fails outright on subgraphs, where several models can
 sit inside one node with nothing saying which belongs in `diffusion_models/`
 and which in `vae/`. A recipe states it.
 
-Recipes are TRACKED in this repo, unlike `comfyui-nodes.list` and
-`comfyui-patches.list`. A recipe is meant to be shared. It is the executable
+Recipes are TRACKED in this repo. A recipe is meant to be shared. It is the executable
 form of a forum post, and one file can be pasted into a gist or an issue.
 
 ## Using one
@@ -27,9 +26,9 @@ form of a forum post, and one file can be pasted into a gist or an issue.
 `check` and `install` are the same engine, so what `check` tells you is
 exactly what `install` would do. `install` adds the actions.
 
-`install` downloads what is missing into the resolved `models` mount, merges
-the recipe's `nodes` into `comfyui-nodes.list`, and writes the workflow to
-`user/default/workflows/NAME.json`. An existing workflow of the same name that
+`install` downloads what is missing into `data/models`, installs the recipe's
+`nodes` through ComfyUI-Manager's command line (into `data/custom_nodes`), and
+writes the workflow to `data/user/default/workflows/NAME.json`. An existing workflow of the same name that
 differs is saved aside as `NAME.json.bak` first.
 
 Useful flags: `--yes` skips the download confirmation, needed when stdin is
@@ -137,7 +136,7 @@ lands in a path, so it must be a plain name with no slashes.
 | `name` | yes | human title, not the filename |
 | `description` | no | what the workflow produces |
 | `notes` | no | JSON has no comments, so prose goes here |
-| `nodes` | no | node-list entries, merged into `comfyui-nodes.list` on install |
+| `nodes` | no | registry ids, `id@version` or git URLs, installed on `recipe install` |
 | `run_flags` | no | launch flags this workflow needs |
 | `run_note` | no | why those flags are needed |
 | `models` | no | one object per model, all five keys required |
@@ -156,9 +155,9 @@ Model entry rules, all enforced before any I/O:
 and one workflow's requirement is not a reason to change how every other
 workflow launches.
 
-`nodes` are not installed directly. They are merged into
-`comfyui-nodes.list` and the entrypoint does the work on the next start, so
-there is one source of truth for the installed node set.
+`nodes` are installed when you run `recipe install`, through Manager's `cm-cli`; restart
+ComfyUI afterwards to load them. A node already in `data/custom_nodes` is skipped. (Upstream's
+container build merges them into a node list instead; there is no such list in this port.)
 
 ### Why the graph is last and compact
 
@@ -187,3 +186,6 @@ is downloaded. A malformed recipe fails immediately, not halfway through
 
 A recipe that fails validation still shows up in `recipe list`, marked
 `INVALID`, rather than silently disappearing.
+
+> Ported from bjarkebolding/spark-comfyui (MIT). Differences from upstream: no container, no `spark-mounts.conf`
+> (models are `data/models` in the install folder), no node list, and `capture` reads Manager's catalogue from the venv.

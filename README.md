@@ -160,6 +160,26 @@ Put `KEY = VALUE` lines in `spark-comfyui.conf` next to the script, or set them 
   re-applies it after, so git never sees a dirty tree. If the patch no longer fits the new ComfyUI,
   it rolls back and says so.
 
+## Troubleshooting
+
+Start with `./spark-comfyui.sh doctor`; every failure names its fix.
+
+- **A custom node will not load:** read the ComfyUI log (`logs`, or the terminal running `run`). Manager installs a node's requirements with uv; torch is held at its pin, so a node demanding a different torch fails to install rather than breaking your GPU stack.
+- **CPU onnxruntime sneaked in** (a node's requirements pulled it): `run` and `install` detect it and put the GPU wheel back.
+- **SageAttention check fails at `run`:** it refuses to start rather than run slow. Run `./spark-comfyui.sh install` (rebuilds it, about 5 minutes), or set `SPARK_ATTENTION = sdpa`.
+- **LTX-2.3 audio workflows fail with `Input type (float) and bias type (c10::BFloat16)`:** set `SPARK_BF16_VAE = 0` in `spark-comfyui.conf`. The audio VAE can't run under `--bf16-vae`; the unet and text-encoder speedups are kept.
+- **Silent hard reboot during video generation:** leave `status --watch` running, reproduce, then read the last lines of `.state/status.log`. A power spike right before it dies points at overcurrent; upstream's `tune --clock-cap 2100` is the fix and is not ported (see below), so apply it by hand with `sudo nvidia-smi -lgc 0,2100`.
+- **The machine freezes near the memory limit:** swap thrash on unified memory. Turn swap off (`sudo swapoff -a`) and consider `SPARK_RESERVE_VRAM`.
+- **The disk fills up:** models are the big part. `du -sh data/models/*`; the build leftovers in `build/` and `.cache/` can be deleted and are rebuilt on demand.
+- **The UI is reachable by anyone on the LAN:** that is the default. Set `BIND_ADDR = 127.0.0.1` and use an SSH tunnel.
+
+## Security notes
+
+- **No container confinement.** Custom nodes run as you (see the next section). Everything else is unprivileged: nothing here uses `sudo`, and the one system-level change, the optional user service, is a file in `~/.config/systemd/user/`.
+- **ComfyUI has no authentication.** Manager runs in `personal_cloud` mode, fine on a trusted LAN. Do not expose the port to the internet.
+- **What gets downloaded and run at install time:** uv (from astral.sh, only if absent), Python 3.12 (from uv), PyTorch (download.pytorch.org), the SageAttention source pinned to one commit, and the onnxruntime wheel pinned by sha256. `recipe install` verifies every model's sha256 before it moves into place.
+- **Update the tool carefully:** `install.sh` is short and readable before you pipe it to `bash`; the repo is MIT.
+
 ## The trade-off against the container
 
 Upstream's container runs custom nodes as non-root with all capabilities dropped and no view of your
