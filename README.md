@@ -27,8 +27,30 @@ cd ComfyUI
 ./spark-comfyui.sh run          # UI at http://<spark-ip>:8188
 ```
 
-Put models in `ComfyUI/data/models/checkpoints` (and the other `data/models/*` folders), then reload
-the page. Stop ComfyUI with Ctrl+C.
+Stop ComfyUI with Ctrl+C. To reach the UI from your laptop, open `http://<spark-ip>:8188`. If you set
+`BIND_ADDR = 127.0.0.1`, tunnel instead: `ssh -N -L 8188:127.0.0.1:8188 you@spark`, then open
+`http://localhost:8188`.
+
+### Where your models and files go
+
+Everything of yours is in the `data/` folder inside the install folder, so it survives `update`:
+
+| Put this | Here (inside the install folder) |
+|---|---|
+| Full checkpoints (`.safetensors`, SD/SDXL/Flux single-file) | `data/models/checkpoints/` |
+| Diffusion models / UNets (Flux, Qwen-Image, Wan, LTX) | `data/models/diffusion_models/` |
+| Text encoders (T5, Qwen, CLIP-L) | `data/models/text_encoders/` |
+| VAEs | `data/models/vae/` |
+| LoRAs | `data/models/loras/` |
+| ControlNets, upscalers, CLIP vision, embeddings | `data/models/controlnet/`, `upscale_models/`, `clip_vision/`, `embeddings/` |
+| Custom nodes | install them from the **Manager** button in the UI; they land in `data/custom_nodes/` |
+| Saved workflows | `data/user/default/workflows/` |
+| Images you generate | `data/output/` (inputs you upload: `data/input/`) |
+
+Copy models in with `scp` or `rsync` from your laptop, or download them straight on the Spark with
+`curl -L -o <file> <url>` or `hf download`. Models are picked up without a restart: press `r` in the
+UI to refresh the lists. If your models already live elsewhere (another disk, a NAS), make any of these
+folders a symlink to it; `install` leaves a symlinked folder alone.
 
 **Update later:** run the same curl line again (it refreshes this tool and fixes whatever differs), or
 `./spark-comfyui.sh update` to also move ComfyUI to the newest upstream.
@@ -48,7 +70,7 @@ git clone https://github.com/bmaltais/spark-comfyui-uv.git ComfyUI && cd ComfyUI
 
 ### Requirements
 
-
+A DGX Spark on DGX OS (r580 driver) with the CUDA 13.0 toolkit at `/usr/local/cuda`, plus `git`,
 `curl`, `g++`, `libgl1` and `libglib2.0-0t64`, which DGX OS ships. `install` checks all of it first
 and prints the exact `apt` line for anything missing. It never runs `sudo`.
 
@@ -75,21 +97,22 @@ An `install`, `update` and `run` hold a lock, so you can't change the install un
 
 ## What lives where
 
-Everything is under the folder you cloned into. Nothing is written to `~/.cache`, `~/.local` or the
-system Python.
+Everything is under the install folder (`ComfyUI/` if you used the curl line; below it is called
+`<install>/`). Nothing is written to `~/.cache`, `~/.local` or the system Python.
 
 | Path | Contents |
 |---|---|
-| `bin/` | uv, only if the system has none |
-| `.python/`, `.venv/` | uv-managed Python 3.12 and the venv |
-| `ComfyUI/` | the git checkout (code only) |
-| `data/` | **your content**: `models/`, `custom_nodes/`, `input/`, `output/`, `user/` (workflows, Manager config). Passed to ComfyUI with `--base-directory`, so updates never touch it |
-| `.cache/` | uv, pip, Hugging Face, torch, Triton and CUDA kernel caches |
-| `build/` | SageAttention source |
-| `.state/` | lock, torch constraints, build stamps |
+| `<install>/spark-comfyui.sh`, `install.sh`, `lib/` | this tool (a git checkout of this repo) |
+| `<install>/data/` | **your content**, listed above. Passed to ComfyUI with `--base-directory`, so updates never touch it |
+| `<install>/ComfyUI/` | ComfyUI's own code (a separate git checkout, managed for you; don't put files here) |
+| `<install>/bin/` | uv, only if the system has none |
+| `<install>/.python/`, `.venv/` | uv-managed Python 3.12 and the venv |
+| `<install>/.cache/` | uv, pip, Hugging Face, torch, Triton and CUDA kernel caches |
+| `<install>/build/` | SageAttention source |
+| `<install>/.state/` | lock, torch constraints, build stamps |
 
-To move or remove it, move or delete the folder. (`git` credentials and shell config in `$HOME` are
-not touched either way.)
+Hugging Face downloads made by custom nodes go to `.cache/huggingface`. To move or remove the install,
+move or delete the folder. (`git` credentials and shell config in `$HOME` are not touched either way.)
 
 ## Configuration
 
