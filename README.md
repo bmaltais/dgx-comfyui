@@ -15,8 +15,8 @@ On the Spark (SSH in, or open a terminal on it):
 curl -fsSL https://raw.githubusercontent.com/bmaltais/spark-comfyui-uv/main/install.sh | bash
 ```
 
-It creates a `ComfyUI` folder in the directory you run it from, so `cd` to wherever you want it first.
-**That choice also picks the disk**: the models live inside it (`ComfyUI/data/models`), so run it from a
+It creates a `spark-comfyui-uv` folder in the directory you run it from, so `cd` to wherever you want it first.
+**That choice also picks the disk**: the models live inside it (`spark-comfyui-uv/data/models`), so run it from a
 big disk (for example `cd /mnt/bigdisk`) if you plan to pull tens of GB of models. It
 clones this repo into it and runs `./spark-comfyui.sh install`. First run takes about 15 minutes
 (PyTorch download, then a ~5 minute SageAttention compile) and ends with a one-line verdict. To name
@@ -25,7 +25,7 @@ the folder yourself: `... | bash -s -- /path/to/folder`.
 Then start it:
 
 ```bash
-cd ComfyUI
+cd spark-comfyui-uv
 ./spark-comfyui.sh run          # UI at http://<spark-ip>:8188
 ```
 
@@ -73,7 +73,7 @@ service: it restarts after a crash and starts at boot. `stop` stops it, `logs -f
 and run it yourself:
 
 ```bash
-git clone https://github.com/bmaltais/spark-comfyui-uv.git ComfyUI && cd ComfyUI
+git clone https://github.com/bmaltais/spark-comfyui-uv.git && cd spark-comfyui-uv
 ./spark-comfyui.sh install
 ```
 
@@ -114,7 +114,7 @@ An `install`, `update` and `run` hold a lock, so you can't change the install un
 
 ## What lives where
 
-Everything is under the install folder (`ComfyUI/` if you used the curl line; below it is called
+Everything is under the install folder (`spark-comfyui-uv/` if you used the curl line; below it is called
 `<install>/`). Nothing is written to `~/.cache`, `~/.local` or the system Python.
 
 | Path | Contents |

@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/bmaltais/spark-comfyui-uv/main/install.sh | bash
 #
-# Creates ./ComfyUI in the folder you run it from and installs there (or updates it, if it is
+# Creates ./spark-comfyui-uv in the folder you run it from and installs there (or updates it, if it is
 # already there). Pick another folder with:  ... | bash -s -- /path/to/folder
 # Safe to run again: it updates this tool, then re-checks everything and fixes only what differs.
 # It never uses sudo. Read it first if you like; it only clones the repo and runs ./spark-comfyui.sh install.
@@ -15,7 +15,7 @@ if [[ -z "$DIR" ]]; then
   if [[ -f "$PWD/spark-comfyui.sh" && -d "$PWD/.git" ]]; then
     DIR="$PWD"            # already inside a checkout: update it in place
   else
-    DIR="$PWD/ComfyUI"
+    DIR="$PWD/spark-comfyui-uv"
   fi
 fi
 
