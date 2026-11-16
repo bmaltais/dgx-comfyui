@@ -1,4 +1,4 @@
-# spark-comfyui-uv
+# dgx-comfyui
 
 ComfyUI on the NVIDIA DGX Spark (GB10, sm_121), installed natively with [uv](https://docs.astral.sh/uv/)
 into **one folder**. One script, safe to re-run.
@@ -12,21 +12,21 @@ sm_121, GPU onnxruntime, the unified-memory patch.
 On the Spark (SSH in, or open a terminal on it):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bmaltais/spark-comfyui-uv/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bmaltais/dgx-comfyui/main/install.sh | bash
 ```
 
-It creates a `spark-comfyui-uv` folder in the directory you run it from, so `cd` to wherever you want it first.
-**That choice also picks the disk**: the models live inside it (`spark-comfyui-uv/data/models`), so run it from a
+It creates a `dgx-comfyui` folder in the directory you run it from, so `cd` to wherever you want it first.
+**That choice also picks the disk**: the models live inside it (`dgx-comfyui/data/models`), so run it from a
 big disk (for example `cd /mnt/bigdisk`) if you plan to pull tens of GB of models. It
-clones this repo into it and runs `./spark-comfyui.sh install`. First run takes about 15 minutes
+clones this repo into it and runs `./dgx-comfyui.sh install`. First run takes about 15 minutes
 (PyTorch download, then a ~5 minute SageAttention compile) and ends with a one-line verdict. To name
 the folder yourself: `... | bash -s -- /path/to/folder`.
 
 Then start it:
 
 ```bash
-cd spark-comfyui-uv
-./spark-comfyui.sh run          # UI at http://<spark-ip>:8188
+cd dgx-comfyui
+./dgx-comfyui.sh run          # UI at http://<spark-ip>:8188
 ```
 
 Stop ComfyUI with Ctrl+C. To reach the UI from your laptop, open `http://<spark-ip>:8188`. If you set
@@ -57,15 +57,15 @@ folders a symlink to it; `install` leaves a symlinked folder alone.
 **Which ComfyUI you get:** the newest tagged **release** (e.g. `v0.45.4`), not `master`, which runs ahead
 of releases. Pin something else with `COMFY_REF` (see Configuration).
 
-**Update later:** `./spark-comfyui.sh update` moves ComfyUI to the newest release, upgrades its Python
+**Update later:** `./dgx-comfyui.sh update` moves ComfyUI to the newest release, upgrades its Python
 dependencies to what that release allows (frontend package, Manager and so on; torch stays at its pin),
 re-applies the patch and re-checks everything. It prints the old and new version. Running the curl line
 again only refreshes this tool and repairs the install; it never moves ComfyUI to a newer release.
 `doctor` tells you when a newer release exists.
 
-**Check on it:** `./spark-comfyui.sh doctor` reports every part and changes nothing.
+**Check on it:** `./dgx-comfyui.sh doctor` reports every part and changes nothing.
 
-**Running it for days:** `./spark-comfyui.sh service` runs ComfyUI in the background as a user systemd
+**Running it for days:** `./dgx-comfyui.sh service` runs ComfyUI in the background as a user systemd
 service: it restarts after a crash and starts at boot. `stop` stops it, `logs -f` follows it, and
 `service --disable` removes it. `install` and `update` stop it while they work and start it again after.
 
@@ -73,8 +73,8 @@ service: it restarts after a crash and starts at boot. `stop` stops it, `logs -f
 and run it yourself:
 
 ```bash
-git clone https://github.com/bmaltais/spark-comfyui-uv.git && cd spark-comfyui-uv
-./spark-comfyui.sh install
+git clone https://github.com/bmaltais/dgx-comfyui.git && cd dgx-comfyui
+./dgx-comfyui.sh install
 ```
 
 ### Requirements
@@ -88,7 +88,7 @@ and prints the exact `apt` line for anything missing. It never runs `sudo` itsel
 | Message | Fix |
 |---|---|
 | `driver ... is older than r580` | Update DGX OS, reboot. |
-| `no CUDA toolkit (nvcc)` | `sudo apt install cuda-toolkit-13-0`, or set `CUDA_HOME` in `spark-comfyui.conf`. |
+| `no CUDA toolkit (nvcc)` | `sudo apt install cuda-toolkit-13-0`, or set `CUDA_HOME` in `dgx-comfyui.conf`. |
 | `missing libGL...` | The `sudo apt install ...` line it printed. |
 | `another install, update or run holds the lock` | ComfyUI is running; stop it first. |
 | Anything else | Re-run `install` (it resumes), then `doctor`, and open an issue with the output. |
@@ -105,7 +105,7 @@ and prints the exact `apt` line for anything missing. It never runs `sudo` itsel
 | `service [--disable]` | Background service (user systemd unit written to `~/.config/systemd/user/`, the one thing outside the folder). Also enables lingering so it survives logout and starts at boot; if that needs `sudo` it tells you the command. |
 | `stop` | Stops the service, or a foreground ComfyUI. |
 | `logs [-f]` | The service's log (journald). |
-| `backup [--with-output] [FILE]` | A small `.tgz` in `backups/`: workflows and settings (`data/user`), `data/input`, your `spark-comfyui.conf`, the custom-node set (git URL and commit) and a list of your models. Models are listed, never archived. Safe while running. |
+| `backup [--with-output] [FILE]` | A small `.tgz` in `backups/`: workflows and settings (`data/user`), `data/input`, your `dgx-comfyui.conf`, the custom-node set (git URL and commit) and a list of your models. Models are listed, never archived. Safe while running. |
 | `restore FILE [--force]` | Installs if needed, puts the content back (existing files kept unless `--force`), re-clones custom nodes at their commits and lists models that are missing. |
 | `tune [--clock-cap MHZ] [--persist]` <br> `tune --revert` | Host stability for the Spark, the one command that uses `sudo` and changes the machine outside this folder: swap off (on unified memory a workload near the limit thrashes swap and freezes the box instead of getting a clean out-of-memory kill), `vm.swappiness=10`, driver persistence mode, and an optional clock cap (`--clock-cap 2100` stops the silent hard reboots some units get when the GPU jumps from idle to ~85 W). `--persist` adds a boot unit (`comfyui-tune.service`) so it survives reboots. `--revert` puts everything back: swap on, clocks unlocked, persistence off, the unit and the sysctl line removed. Each step is skipped if already in place, so a re-run asks for no password it doesn't need. `doctor` warns while swap is on. |
 | `recipe list\|show\|check\|install\|capture` | Everything a workflow needs, as data: its custom nodes and every model with destination, size and sha256. `install` downloads what's missing (resumable, hash-verified), installs the nodes through Manager's CLI and drops the workflow into `data/user/default/workflows`. `capture NAME` writes a recipe from a workflow that already runs here. Gated downloads read `HF_TOKEN` / `CIVITAI_TOKEN`. See `recipes/README.md`. |
@@ -114,12 +114,12 @@ An `install`, `update` and `run` hold a lock, so you can't change the install un
 
 ## What lives where
 
-Everything is under the install folder (`spark-comfyui-uv/` if you used the curl line; below it is called
+Everything is under the install folder (`dgx-comfyui/` if you used the curl line; below it is called
 `<install>/`). Nothing is written to `~/.cache`, `~/.local` or the system Python.
 
 | Path | Contents |
 |---|---|
-| `<install>/spark-comfyui.sh`, `install.sh`, `lib/` | this tool (a git checkout of this repo) |
+| `<install>/dgx-comfyui.sh`, `install.sh`, `lib/` | this tool (a git checkout of this repo) |
 | `<install>/data/` | **your content**, listed above. Passed to ComfyUI with `--base-directory`, so updates never touch it |
 | `<install>/ComfyUI/` | ComfyUI's own code (a separate git checkout, managed for you; don't put files here) |
 | `<install>/bin/` | uv, only if the system has none |
@@ -133,7 +133,7 @@ move or delete the folder. (`git` credentials and shell config in `$HOME` are no
 
 ## Configuration
 
-Put `KEY = VALUE` lines in `spark-comfyui.conf` next to the script, or set them in the environment
+Put `KEY = VALUE` lines in `dgx-comfyui.conf` next to the script, or set them in the environment
 (the environment wins). Unknown keys are warned about.
 
 | Key | Default | Meaning |
@@ -163,14 +163,14 @@ Put `KEY = VALUE` lines in `spark-comfyui.conf` next to the script, or set them 
 
 ## Troubleshooting
 
-Start with `./spark-comfyui.sh doctor`; every failure names its fix.
+Start with `./dgx-comfyui.sh doctor`; every failure names its fix.
 
 - **A custom node will not load:** read the ComfyUI log (`logs`, or the terminal running `run`). Manager installs a node's requirements with uv; torch is held at its pin, so a node demanding a different torch fails to install rather than breaking your GPU stack.
 - **CPU onnxruntime sneaked in** (a node's requirements pulled it): `run` and `install` detect it and put the GPU wheel back.
-- **SageAttention check fails at `run`:** it refuses to start rather than run slow. Run `./spark-comfyui.sh install` (rebuilds it, about 5 minutes), or set `SPARK_ATTENTION = sdpa`.
-- **LTX-2.3 audio workflows fail with `Input type (float) and bias type (c10::BFloat16)`:** set `SPARK_BF16_VAE = 0` in `spark-comfyui.conf`. The audio VAE can't run under `--bf16-vae`; the unet and text-encoder speedups are kept.
-- **Silent hard reboot during video generation:** leave `status --watch` running, reproduce, then read the last lines of `.state/status.log`. A power spike right before it dies points at overcurrent; the fix is `./spark-comfyui.sh tune --clock-cap 2100 --persist`.
-- **The machine freezes near the memory limit:** swap thrash on unified memory. Run `./spark-comfyui.sh tune` (swap off) and consider `SPARK_RESERVE_VRAM`; `doctor` warns while swap is on.
+- **SageAttention check fails at `run`:** it refuses to start rather than run slow. Run `./dgx-comfyui.sh install` (rebuilds it, about 5 minutes), or set `SPARK_ATTENTION = sdpa`.
+- **LTX-2.3 audio workflows fail with `Input type (float) and bias type (c10::BFloat16)`:** set `SPARK_BF16_VAE = 0` in `dgx-comfyui.conf`. The audio VAE can't run under `--bf16-vae`; the unet and text-encoder speedups are kept.
+- **Silent hard reboot during video generation:** leave `status --watch` running, reproduce, then read the last lines of `.state/status.log`. A power spike right before it dies points at overcurrent; the fix is `./dgx-comfyui.sh tune --clock-cap 2100 --persist`.
+- **The machine freezes near the memory limit:** swap thrash on unified memory. Run `./dgx-comfyui.sh tune` (swap off) and consider `SPARK_RESERVE_VRAM`; `doctor` warns while swap is on.
 - **The disk fills up:** models are the big part. `du -sh data/models/*`; the build leftovers in `build/` and `.cache/` can be deleted and are rebuilt on demand.
 - **The UI is reachable by anyone on the LAN:** that is the default. Set `BIND_ADDR = 127.0.0.1` and use an SSH tunnel.
 

@@ -16,11 +16,11 @@ form of a forum post, and one file can be pasted into a gist or an issue.
 ## Using one
 
 ```
-./spark-comfyui.sh recipe list                    what is available
-./spark-comfyui.sh recipe show NAME               models, nodes and flags
-./spark-comfyui.sh recipe check NAME              what is missing, downloads nothing
-./spark-comfyui.sh recipe check NAME --verify     also hash every local file
-./spark-comfyui.sh recipe install NAME
+./dgx-comfyui.sh recipe list                    what is available
+./dgx-comfyui.sh recipe show NAME               models, nodes and flags
+./dgx-comfyui.sh recipe check NAME              what is missing, downloads nothing
+./dgx-comfyui.sh recipe check NAME --verify     also hash every local file
+./dgx-comfyui.sh recipe install NAME
 ```
 
 `check` and `install` are the same engine, so what `check` tells you is
@@ -54,7 +54,7 @@ Use `--force` to opt in.
 bearer header:
 
 ```
-HF_TOKEN=hf_... ./spark-comfyui.sh recipe install NAME
+HF_TOKEN=hf_... ./dgx-comfyui.sh recipe install NAME
 ```
 
 Never put a token in a recipe. Recipes are committed, so a credential must not
@@ -68,7 +68,7 @@ preflight names the variable only when a server actually answers 401 or 403.
 Start from a workflow that already runs on this box:
 
 ```
-./spark-comfyui.sh recipe capture WORKFLOW [--name NAME]
+./dgx-comfyui.sh recipe capture WORKFLOW [--name NAME]
 ```
 
 `WORKFLOW` is a saved workflow's name as it appears in the ComfyUI sidebar, or

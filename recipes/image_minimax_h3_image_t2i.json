@@ -2,10 +2,10 @@
  "schema": 1,
  "name": "MiniMax-H3-Image text-to-image (DGX Spark)",
  "description": "Stock ComfyUI MiniMax-H3-Image template (image_minimax_h3_image_t2i): the pruned int8-convrot image model with the Qwen3-VL 32B int8 text encoder, a Qwen3.5 9B w4a8 text encoder and the fp16 image VAE. The quantised int8 and w4a8 weights suit the GB10, which has native int8 paths in comfy-kitchen and is limited by memory bandwidth, not capacity.",
- "notes": "About 56.6 GB of weights in four files (the template's own set; its note names a 'Qwen3.8-27B' file but the graph loads qwen3.5_9b_w4a8_gptq, so that is what this recipe fetches). Fits easily in the Spark's 128 GB unified memory. The graph starts at 4 MP because the model does not work well at low resolution; its useful range is about 4 to 20 MP and it is best near 16 MP (1:1 4096x4096, 16:9 5472x3072, 3:2 5024x3360), which a Spark has the memory for: raise the size in the ResolutionSelector. Same repo also offers the 32B text encoder as NVFP4-AWQ (qwen3vl_32b_minimax_h3_nvfp4_awq, 15.7 GB instead of 27.1 GB; native on Blackwell) and the diffusion model as w4a8 (12.5 GB) or bf16 (40.2 GB); swap them in the loaders if you want a smaller or fuller-precision set. Keep ComfyUI up to date (./spark-comfyui.sh update).",
+ "notes": "About 56.6 GB of weights in four files (the template's own set; its note names a 'Qwen3.8-27B' file but the graph loads qwen3.5_9b_w4a8_gptq, so that is what this recipe fetches). Fits easily in the Spark's 128 GB unified memory. The graph starts at 4 MP because the model does not work well at low resolution; its useful range is about 4 to 20 MP and it is best near 16 MP (1:1 4096x4096, 16:9 5472x3072, 3:2 5024x3360), which a Spark has the memory for: raise the size in the ResolutionSelector. Same repo also offers the 32B text encoder as NVFP4-AWQ (qwen3vl_32b_minimax_h3_nvfp4_awq, 15.7 GB instead of 27.1 GB; native on Blackwell) and the diffusion model as w4a8 (12.5 GB) or bf16 (40.2 GB); swap them in the loaders if you want a smaller or fuller-precision set. Keep ComfyUI up to date (./dgx-comfyui.sh update).",
  "nodes": [],
  "run_flags": [],
- "run_note": "No extra flags needed. At 16 MP and above, if memory gets tight next to another large process, set SPARK_RESERVE_VRAM in spark-comfyui.conf.",
+ "run_note": "No extra flags needed. At 16 MP and above, if memory gets tight next to another large process, set SPARK_RESERVE_VRAM in dgx-comfyui.conf.",
  "models": [
   {
    "file": "minimax_h3_image_pruned_int8_convrot.safetensors",

@@ -7,5 +7,6 @@
 /ComfyUI/
 /build/
 /data/
-/spark-comfyui.conf
+/dgx-comfyui.conf
 /backups/
+/spark-comfyui.conf

@@ -16,11 +16,11 @@ if [[ "$SYNCED" == "$HEAD_SHA" ]]; then echo "Upstream has not moved."; else
   echo; echo "== upstream commits since sync"; git -C "$UP" log --oneline "$SYNCED..HEAD"
 fi
 
-echo; echo "== pins: upstream Dockerfile vs our defaults (spark-comfyui.sh)"
+echo; echo "== pins: upstream Dockerfile vs our defaults (dgx-comfyui.sh)"
 pin() {  # upstream ARG name, our key
   local up ours
   up="$(sed -n "s/^ARG $1=//p" "$UP/container/Dockerfile" | head -1)"
-  ours="$(grep -oE "\\\$\\{$2:=[^}]*\\}" "$ROOT/spark-comfyui.sh" | head -1 | sed -E "s/^.*:=//; s/\\}\$//")"
+  ours="$(grep -oE "\\\$\\{$2:=[^}]*\\}" "$ROOT/dgx-comfyui.sh" | head -1 | sed -E "s/^.*:=//; s/\\}\$//")"
   if [[ "$up" == "$ours" ]]; then printf '  same     %-22s %s\n' "$2" "${ours:0:70}"
   else drift=1; printf '  DIFFERS  %-22s ours=%s\n           %-22s upstream=%s\n' "$2" "${ours:0:90}" "" "${up:0:90}"; fi
 }

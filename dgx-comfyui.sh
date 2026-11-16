@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# spark-comfyui.sh: ComfyUI on a DGX Spark (GB10, sm_121) in one folder, with uv.
+# dgx-comfyui.sh: ComfyUI on a DGX Spark (GB10, sm_121) in one folder, with uv.
 #
-#   ./spark-comfyui.sh install            converge to the wanted state; safe to re-run, changes only what differs
-#   ./spark-comfyui.sh update             newest ComfyUI release + its dependencies, then converge
-#   ./spark-comfyui.sh run [..]           launch ComfyUI in the foreground (extra args go to main.py)
-#   ./spark-comfyui.sh doctor             read-only health report, changes nothing
-#   ./spark-comfyui.sh status [--watch [SEC]]   one-page glance, or a live dashboard with sparklines
-#   ./spark-comfyui.sh service [--disable]      run ComfyUI in the background, restarted on crash and at boot
-#   ./spark-comfyui.sh stop | logs [-f]         stop it; read its service log
-#   ./spark-comfyui.sh backup [--with-output] [FILE] | restore FILE [--force]
-#   ./spark-comfyui.sh recipe list|show|check|install|capture   a workflow's nodes and models, as data
-#   ./spark-comfyui.sh tune [--clock-cap MHZ] [--persist] | tune --revert   host stability (uses sudo)
+#   ./dgx-comfyui.sh install            converge to the wanted state; safe to re-run, changes only what differs
+#   ./dgx-comfyui.sh update             newest ComfyUI release + its dependencies, then converge
+#   ./dgx-comfyui.sh run [..]           launch ComfyUI in the foreground (extra args go to main.py)
+#   ./dgx-comfyui.sh doctor             read-only health report, changes nothing
+#   ./dgx-comfyui.sh status [--watch [SEC]]   one-page glance, or a live dashboard with sparklines
+#   ./dgx-comfyui.sh service [--disable]      run ComfyUI in the background, restarted on crash and at boot
+#   ./dgx-comfyui.sh stop | logs [-f]         stop it; read its service log
+#   ./dgx-comfyui.sh backup [--with-output] [FILE] | restore FILE [--force]
+#   ./dgx-comfyui.sh recipe list|show|check|install|capture   a workflow's nodes and models, as data
+#   ./dgx-comfyui.sh tune [--clock-cap MHZ] [--persist] | tune --revert   host stability (uses sudo)
 #
 # Derived from https://github.com/bjarkebolding/spark-comfyui (MIT), which does the same
 # in a container. Everything here lives under this script's folder: uv, Python, venv,
@@ -27,18 +27,20 @@ DATA="$ROOT/data"
 MEM_MARKER="# spark-comfyui:mem_unified"
 MEM_FILE="comfy/model_management.py"
 
-# ---- config: environment > spark-comfyui.conf > defaults -------------------------
+# ---- config: environment > dgx-comfyui.conf > defaults -------------------------
 CONF_KEYS=(PYTHON_VERSION TORCH_VERSION TORCHVISION_VERSION TORCHAUDIO_VERSION TORCH_INDEX
   COMFY_REPO COMFY_REF SAGE_REF SAGE_ARCH ORT_WHEEL_URL CUDA_HOME PORT BIND_ADDR
   SPARK_ATTENTION SPARK_BF16 SPARK_BF16_VAE SPARK_STATIC_VRAM SPARK_RESERVE_VRAM)
+CONF_FILE="$ROOT/dgx-comfyui.conf"
+[[ -f "$CONF_FILE" ]] || CONF_FILE="$ROOT/spark-comfyui.conf"   # its name before the rename
 load_conf() {
-  local f="$ROOT/spark-comfyui.conf" line k v
+  local f="$CONF_FILE" line k v
   [[ -f "$f" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%%#*}"
     [[ "$line" =~ ^[[:space:]]*([A-Z_]+)[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] || continue
     k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
-    [[ " ${CONF_KEYS[*]} " == *" $k "* ]] || { printf '[warn] spark-comfyui.conf: unknown key %s ignored\n' "$k" >&2; continue; }
+    [[ " ${CONF_KEYS[*]} " == *" $k "* ]] || { printf '[warn] %s: unknown key %s ignored\n' "${f##*/}" "$k" >&2; continue; }
     [[ -n "${!k+x}" ]] || printf -v "$k" '%s' "$v"
   done < "$f"
 }
@@ -233,7 +235,7 @@ chk_comfy() {
     # A fresh install lands on the newest release; moving an existing one is `update`'s job.
     want="$(resolve_ref || true)"
     if [[ -n "$want" && "$(git -C "$COMFY" rev-parse HEAD)" != "$(git -C "$COMFY" rev-parse -q --verify "$want^{commit}" 2>/dev/null || true)" ]]; then
-      DETAIL+="; newer release $want exists: run ./spark-comfyui.sh update"
+      DETAIL+="; newer release $want exists: run ./dgx-comfyui.sh update"
     fi
   elif [[ "$COMFY_REF" =~ ^[0-9a-f]{40}$ ]]; then
     [[ "$(git -C "$COMFY" rev-parse HEAD)" == "$COMFY_REF" ]]   # an explicit sha is a pin: install enforces it
@@ -421,7 +423,7 @@ acquire_lock() {
   flock -n "$@" 9 || die "another install, update or run holds the lock (stop ComfyUI first to change it)"
 }
 
-UNIT="spark-comfyui.service"
+UNIT="dgx-comfyui.service"
 UNIT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT"
 svc_active() { command -v systemctl >/dev/null && systemctl --user is-active --quiet "$UNIT" 2>/dev/null; }
 SERVICE_PAUSED=0
@@ -465,7 +467,7 @@ cmd_install() {
 cmd_update() {
   pause_service
   acquire_lock -x
-  [[ -d "$COMFY/.git" ]] || die "not installed yet: run ./spark-comfyui.sh install"
+  [[ -d "$COMFY/.git" ]] || die "not installed yet: run ./dgx-comfyui.sh install"
   setup_env
   log "Updating ComfyUI ($COMFY_REF)"
   local before_sha before_label frontend_before
@@ -497,9 +499,9 @@ cmd_doctor() {
   [[ "$SPARK_ATTENTION" == sage ]] && { converge sage "sage" || true; }
   converge ort "onnx" || true
   if [[ -f "$STATE/comfy.previous" ]]; then info "previous ComfyUI commit: $(cat "$STATE/comfy.previous")"; fi
-  if [[ -n "$(swapon --noheadings 2>/dev/null)" ]]; then warn "swap is enabled: heavy workloads can freeze a Spark (./spark-comfyui.sh tune)"; else ok "swap disabled on the host"; fi
+  if [[ -n "$(swapon --noheadings 2>/dev/null)" ]]; then warn "swap is enabled: heavy workloads can freeze a Spark (./dgx-comfyui.sh tune)"; else ok "swap disabled on the host"; fi
   if grep -qx 'After=multi-user.target' /etc/systemd/system/comfyui-tune.service 2>/dev/null; then
-    warn "comfyui-tune.service waits for the end of boot and may never run: rewrite it with ./spark-comfyui.sh tune --persist"
+    warn "comfyui-tune.service waits for the end of boot and may never run: rewrite it with ./dgx-comfyui.sh tune --persist"
   fi
   if have_gpu; then info "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"; else warn "no GPU visible: kernel gates skipped"; fi
   summary doctor
@@ -507,7 +509,7 @@ cmd_doctor() {
 
 cmd_run() {
   acquire_lock -s
-  [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: run ./spark-comfyui.sh install"
+  [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: run ./dgx-comfyui.sh install"
   MODE=install; setup_env
   # Same guards the container entrypoint runs: shadowing happens after install, when a node's requirements land.
   log "GPU gates"
@@ -521,7 +523,7 @@ cmd_run() {
   if [[ -n "$ORT_WHEEL_URL" ]] && ! chk_ort; then warn "$DETAIL; repairing"; fix_ort; chk_ort || warn "$DETAIL (preprocessors will use CPU)"; fi
   local attn=()
   case "$SPARK_ATTENTION" in
-    sage) gate_sage || die "SageAttention kernel failed on this GPU; refusing to launch degraded. Run ./spark-comfyui.sh install to rebuild, or set SPARK_ATTENTION=sdpa."
+    sage) gate_sage || die "SageAttention kernel failed on this GPU; refusing to launch degraded. Run ./dgx-comfyui.sh install to rebuild, or set SPARK_ATTENTION=sdpa."
           attn=(--use-sage-attention); ok "SageAttention kernel verified live" ;;
     ck)   attn=(--use-ck-attention); info "Comfy Kitchen INT8 attention" ;;
     sdpa) info "attention: PyTorch SDPA" ;;
@@ -533,7 +535,7 @@ cmd_run() {
   fi
   [[ "$SPARK_STATIC_VRAM" == 1 ]] && flags+=(--disable-dynamic-vram)
   if [[ "$SPARK_RESERVE_VRAM" =~ ^[0-9]+([.][0-9]+)?$ ]]; then flags+=(--reserve-vram "$SPARK_RESERVE_VRAM"); fi
-  [[ "$BIND_ADDR" == 0.0.0.0 ]] && warn "listening on every interface and ComfyUI has no login; set BIND_ADDR = 127.0.0.1 in spark-comfyui.conf for this box only"
+  [[ "$BIND_ADDR" == 0.0.0.0 ]] && warn "listening on every interface and ComfyUI has no login; set BIND_ADDR = 127.0.0.1 in dgx-comfyui.conf for this box only"
   log "Launching ComfyUI on $BIND_ADDR:$PORT"
   cd "$COMFY"
   echo $$ > "$STATE/comfyui.pid"   # the shell becomes python below, so this stays the server's pid
@@ -743,7 +745,7 @@ hdr() { log "$@"; }
 resolve_mounts() { :; }
 _mount_path() { case "$1" in models) printf '%s' "$DATA/models" ;; user) printf '%s' "$DATA/user" ;; *) return 1 ;; esac; }
 cmd_recipe() {
-  [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: ./spark-comfyui.sh install"
+  [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: ./dgx-comfyui.sh install"
   command -v wget >/dev/null || die "wget is missing: sudo apt install wget"
   setup_env
   # shellcheck source=lib/recipes.sh
@@ -795,16 +797,16 @@ cmd_status() {
   case "$st" in
     up) ok "running (pid $(server_pid)): http://${ip:-localhost}:$PORT  (binds $BIND_ADDR)" ;;
     starting) info "starting: process is up, server not answering yet" ;;
-    *) info "not running: ./spark-comfyui.sh run, or ./spark-comfyui.sh service" ;;
+    *) info "not running: ./dgx-comfyui.sh run, or ./dgx-comfyui.sh service" ;;
   esac
   if command -v systemctl >/dev/null && [[ -f "$UNIT_FILE" ]]; then
     info "service: $(systemctl --user is-active "$UNIT" 2>/dev/null || true), $(systemctl --user is-enabled "$UNIT" 2>/dev/null || true)"
-  else info "service: not installed (./spark-comfyui.sh service)"; fi
-  [[ -d "$COMFY/.git" ]] || { warn "not installed yet: ./spark-comfyui.sh install"; return 0; }
+  else info "service: not installed (./dgx-comfyui.sh service)"; fi
+  [[ -d "$COMFY/.git" ]] || { warn "not installed yet: ./dgx-comfyui.sh install"; return 0; }
   info "version: $(comfy_label); torch $(dist_version torch); sageattention $(dist_version sageattention || true)"
   local want; want="$(resolve_ref 2>/dev/null || true)"
   if [[ "$COMFY_REF" == latest && -n "$want" && "$(git -C "$COMFY" describe --tags --exact-match 2>/dev/null || true)" != "$want" ]]; then
-    info "newer release available: $want  (./spark-comfyui.sh update)"
+    info "newer release available: $want  (./dgx-comfyui.sh update)"
   fi
   log "Machine"
   read -r t p c u <<<"$(gpu_sample)"
@@ -813,7 +815,7 @@ cmd_status() {
   info "unified memory: $((used/1024))G used of $((total/1024))G"
   info "disk: $(df -h --output=avail,pcent "$ROOT" | tail -1 | awk '{print $1" free ("$2" used)"}')   models: $(du -sh "$DATA/models" 2>/dev/null | cut -f1)"
   if read -r r q <<<"$(queue_counts)"; [[ "$st" == up ]]; then info "queue: $r running, $q pending"; fi
-  [[ -f "$ROOT/spark-comfyui.conf" ]] && info "config overrides: $(grep -vE '^\s*(#|$)' "$ROOT/spark-comfyui.conf" | tr '\n' ';')"
+  [[ -f "$CONF_FILE" ]] && info "config overrides: $(grep -vE '^\s*(#|$)' "$CONF_FILE" | tr '\n' ';')"
   return 0
 }
 status_watch() {
@@ -830,7 +832,7 @@ status_watch() {
     ht+=("$t"); hp+=("${p%.*}"); hc_+=("$c"); hu+=("$u"); hm+=("$((used/1024))"); hg+=("$r")
     n=${#ht[@]}; if (( n > max )); then ht=("${ht[@]:1}"); hp=("${hp[@]:1}"); hc_=("${hc_[@]:1}"); hu=("${hu[@]:1}"); hm=("${hm[@]:1}"); hg=("${hg[@]:1}"); fi
     printf '\033[H\033[2J'
-    printf '\033[1m spark-comfyui  %s  %s · every %ss · Ctrl+C to leave\033[0m\n\n' "$st" "$(comfy_label)" "$sec"
+    printf '\033[1m dgx-comfyui  %s  %s · every %ss · Ctrl+C to leave\033[0m\n\n' "$st" "$(comfy_label)" "$sec"
     printf '  \033[36m── GPU ──────────────────────────────────────────────\033[0m\n'
     printf '  temp   %5s°C  %s\n' "$t" "$(spark "${ht[@]}")"
     printf '  power  %5sW   %s\n' "$p" "$(spark "${hp[@]}")"
@@ -853,10 +855,10 @@ cmd_service() {
     rm -f "$UNIT_FILE"; systemctl --user daemon-reload
     ok "service removed; ComfyUI no longer starts at boot"; return 0
   fi
-  [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: ./spark-comfyui.sh install"
+  [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: ./dgx-comfyui.sh install"
   local want
   want="[Unit]
-Description=ComfyUI (spark-comfyui-uv, $ROOT)
+Description=ComfyUI (dgx-comfyui, $ROOT)
 After=network-online.target
 
 [Service]
@@ -870,7 +872,7 @@ TimeoutStopSec=30
 [Install]
 WantedBy=default.target"
   if [[ -f "$UNIT_FILE" ]] && ! grep -qF "WorkingDirectory=$ROOT" "$UNIT_FILE"; then
-    die "$UNIT already serves another install ($(sed -n 's/^WorkingDirectory=//p' "$UNIT_FILE")); run its './spark-comfyui.sh service --disable' first"
+    die "$UNIT already serves another install ($(sed -n 's/^WorkingDirectory=//p' "$UNIT_FILE")); run its './dgx-comfyui.sh service --disable' first"
   fi
   mkdir -p "${UNIT_FILE%/*}"
   if [[ -f "$UNIT_FILE" && "$(cat "$UNIT_FILE")" == "$want" ]]; then ok "unit already in place"
@@ -881,7 +883,7 @@ WantedBy=default.target"
     else warn "could not enable lingering; run: sudo loginctl enable-linger $USER (otherwise it stops when you log out)"; fi
   fi
   systemctl --user enable --now "$UNIT" 2>&1 | sed 's/^/  /' || true
-  info "follow it: ./spark-comfyui.sh logs -f    stop: ./spark-comfyui.sh stop    status: ./spark-comfyui.sh status"
+  info "follow it: ./dgx-comfyui.sh logs -f    stop: ./dgx-comfyui.sh stop    status: ./dgx-comfyui.sh status"
 }
 cmd_stop() {
   if svc_active; then systemctl --user stop "$UNIT"; ok "service stopped (it starts again at boot; remove it with: service --disable)"; return 0; fi
@@ -892,7 +894,7 @@ cmd_stop() {
   die "pid $pid ignored SIGTERM for 30 s; stop it by hand"
 }
 cmd_logs() {
-  command -v journalctl >/dev/null && [[ -f "$UNIT_FILE" ]] || die "no service installed; the foreground 'run' prints to its own terminal. Set one up with: ./spark-comfyui.sh service"
+  command -v journalctl >/dev/null && [[ -f "$UNIT_FILE" ]] || die "no service installed; the foreground 'run' prints to its own terminal. Set one up with: ./dgx-comfyui.sh service"
   exec journalctl --user -u "$UNIT" --no-pager "${@:--n 100}"
 }
 
@@ -919,7 +921,7 @@ cmd_backup() {
   find -L "$DATA/models" -type f -printf '%P\t%s\n' 2>/dev/null | sort > "$T/manifest/models.tsv" || true
   for d in data/user data/input; do [[ -d "$ROOT/$d" ]] && parts+=("$d"); done
   (( with_out )) && [[ -d "$DATA/output" ]] && parts+=(data/output)
-  [[ -f "$ROOT/spark-comfyui.conf" ]] && parts+=(spark-comfyui.conf)
+  [[ -f "$CONF_FILE" ]] && parts+=("${CONF_FILE##*/}")
   tar -czf "$file.partial" -C "$ROOT" "${parts[@]}" -C "$T" manifest || rc=$?
   (( rc <= 1 )) || { rm -f "$file.partial"; die "tar failed ($rc)"; }   # 1 = a file changed while reading: fine on a live system
   mv -f "$file.partial" "$file"
@@ -928,8 +930,8 @@ cmd_backup() {
 cmd_restore() {
   local file="" force=0 a
   for a in "$@"; do case "$a" in --force) force=1 ;; -*) die "unknown option $a" ;; *) file="$a" ;; esac; done
-  [[ -f "$file" ]] || die "usage: ./spark-comfyui.sh restore FILE [--force]"
-  tar -tzf "$file" manifest/custom_nodes.tsv >/dev/null 2>&1 || die "$file is not a spark-comfyui backup"
+  [[ -f "$file" ]] || die "usage: ./dgx-comfyui.sh restore FILE [--force]"
+  tar -tzf "$file" manifest/custom_nodes.tsv >/dev/null 2>&1 || die "$file is not a dgx-comfyui backup"
   if [[ ! -x "$PY" || ! -d "$COMFY/.git" ]]; then log "Installing first"; "$SELF" install || die "install failed"; fi
   setup_env; acquire_lock -x
   local T keep=(--skip-old-files); (( force )) && keep=(--overwrite)
@@ -964,7 +966,7 @@ summary() {
   if (( PROBLEMS > 0 )); then printf '\033[1;31m%d problem(s) above.\033[0m\n' "$PROBLEMS" >&2
   elif [[ "$1" == doctor ]]; then printf '\033[1;32mHealthy.\033[0m\n'
   elif (( CHANGES == 0 )); then printf '\033[1;32mNothing to do: already up to date.\033[0m\n'
-  else printf '\033[1;32mDone: %d change(s). Start it with ./spark-comfyui.sh run\033[0m\n' "$CHANGES"; fi
+  else printf '\033[1;32mDone: %d change(s). Start it with ./dgx-comfyui.sh run\033[0m\n' "$CHANGES"; fi
   (( PROBLEMS == 0 )) || exit 1
 }
 

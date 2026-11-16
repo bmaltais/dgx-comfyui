@@ -8,9 +8,9 @@
 #  recipe is the shareable, executable form of "here is how I got this
 #  working".
 #
-#  SOURCED by spark-comfyui.sh, not run. There is no dispatch here and no
+#  SOURCED by dgx-comfyui.sh, not run. There is no dispatch here and no
 #  execute bit; the commands are
-#  ./spark-comfyui.sh recipe list|show|check|install|capture. Everything
+#  ./dgx-comfyui.sh recipe list|show|check|install|capture. Everything
 #  under lib/ is internal — the user-facing surface is the one executable.
 #
 #  PORTED from bjarkebolding/spark-comfyui (MIT) for the native install: the
@@ -19,7 +19,7 @@
 #  launch-time node list natively). Shims it expects: hdr, _mount_path,
 #  resolve_mounts, LIB_DIR, RECIPES_DIR, $PY.
 #
-#  It lives out here rather than inside spark-comfyui.sh because it only
+#  It lives out here rather than inside dgx-comfyui.sh because it only
 #  POPULATES an install: it never touches the image, the container or the
 #  host, and would work unchanged if ComfyUI had been installed some other
 #  way. Everything operational stays in the entry point. It uses the entry
