@@ -95,9 +95,6 @@ and the node list. Rollback is the git checkout (`.state/comfy.previous`), not a
 
 ## Status
 
-Written against upstream at `33e521b` and tested for the parts that don't need a Spark: lint, the
-patch against a real ComfyUI checkout (twice, parse-checked), and install / re-install / doctor on
-x86_64 with the GPU-specific steps skipped. **The sm_121 SageAttention build and the aarch64
-onnxruntime step have not been run on a real DGX Spark yet.** Report what you see.
+Written against upstream at `33e521b`. Tested on a real DGX Spark (GB10, driver 580.178, CUDA 13.0, 2026-11-16): fresh install including the sm_121 SageAttention build and the aarch64 onnxruntime wheel, a no-change re-run, `doctor`, and `run` serving the UI with SageAttention active. Not yet exercised there: `update` against a newer upstream, and generating an image.
 
 MIT. Derived from spark-comfyui, copyright (c) 2026 Bjarke Bolding; see `LICENSE`.

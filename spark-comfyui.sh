@@ -364,7 +364,7 @@ PY
 }
 
 DATA_DIRS=(models/checkpoints models/diffusion_models models/loras models/vae models/text_encoders
-  models/clip_vision models/controlnet models/upscale_models models/embeddings custom_nodes input output temp user)
+  models/clip_vision models/controlnet models/upscale_models models/embeddings custom_nodes input output user)
 chk_data() {
   local d; DETAIL="data/ (models, custom_nodes, input, output, user)"
   for d in "${DATA_DIRS[@]}"; do [[ -d "$DATA/$d" ]] || return 1; done
