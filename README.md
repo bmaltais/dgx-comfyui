@@ -15,7 +15,9 @@ On the Spark (SSH in, or open a terminal on it):
 curl -fsSL https://raw.githubusercontent.com/bmaltais/spark-comfyui-uv/main/install.sh | bash
 ```
 
-It creates a `ComfyUI` folder in the directory you run it from (so `cd` to wherever you want it first),
+It creates a `ComfyUI` folder in the directory you run it from, so `cd` to wherever you want it first.
+**That choice also picks the disk**: the models live inside it (`ComfyUI/data/models`), so run it from a
+big disk (for example `cd /mnt/bigdisk`) if you plan to pull tens of GB of models. It
 clones this repo into it and runs `./spark-comfyui.sh install`. First run takes about 15 minutes
 (PyTorch download, then a ~5 minute SageAttention compile) and ends with a one-line verdict. To name
 the folder yourself: `... | bash -s -- /path/to/folder`.
