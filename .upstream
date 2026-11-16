@@ -1,0 +1,3 @@
+# The upstream commit this repo was last brought in line with. The sync-upstream skill moves it.
+UPSTREAM_REPO=https://github.com/bjarkebolding/spark-comfyui.git
+SYNCED=33e521bf489b06aaa463ae13a4402f73adc0f60d
