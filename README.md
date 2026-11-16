@@ -63,8 +63,9 @@ again only refreshes this tool and repairs the install; it never moves ComfyUI t
 
 **Check on it:** `./spark-comfyui.sh doctor` reports every part and changes nothing.
 
-**Running it for days:** start it inside `tmux` or `screen` so it survives you closing the SSH session.
-(There is no systemd service yet.)
+**Running it for days:** `./spark-comfyui.sh service` runs ComfyUI in the background as a user systemd
+service: it restarts after a crash and starts at boot. `stop` stops it, `logs -f` follows it, and
+`service --disable` removes it. `install` and `update` stop it while they work and start it again after.
 
 **Prefer to read before running?** The installer is [`install.sh`](install.sh), about 30 lines. Or clone
 and run it yourself:
@@ -98,6 +99,13 @@ and prints the exact `apt` line for anything missing. It never runs `sudo`.
 | `update` | Moves ComfyUI to the newest release (`COMFY_REF`), upgrades its dependencies, re-applies the patch, then runs `install`. A failed move rolls back to the previous commit, which is kept in `.state/comfy.previous`. Also notes when the upstream `spark-comfyui` project has GPU-stack changes to port (`scripts/check-upstream.sh`). |
 | `run [args]` | Verifies torch, onnxruntime and a live SageAttention kernel on the GPU, then launches ComfyUI. Extra args go to `main.py`. Refuses to launch with a broken attention kernel rather than quietly running slow. |
 | `doctor` | Read-only health report. Changes nothing. |
+| `status [--watch [SEC]]` | One-page glance: running or not, URL, versions, newer release available, GPU, unified memory, disk, queue. `--watch` is a live dashboard with sparklines (temp, power, clock, load, memory, queue). Every sample goes to `.state/status.log`, the trail to read after a silent hard reboot. |
+| `service [--disable]` | Background service (user systemd unit written to `~/.config/systemd/user/`, the one thing outside the folder). Also enables lingering so it survives logout and starts at boot; if that needs `sudo` it tells you the command. |
+| `stop` | Stops the service, or a foreground ComfyUI. |
+| `logs [-f]` | The service's log (journald). |
+| `backup [--with-output] [FILE]` | A small `.tgz` in `backups/`: workflows and settings (`data/user`), `data/input`, your `spark-comfyui.conf`, the custom-node set (git URL and commit) and a list of your models. Models are listed, never archived. Safe while running. |
+| `restore FILE [--force]` | Installs if needed, puts the content back (existing files kept unless `--force`), re-clones custom nodes at their commits and lists models that are missing. |
+| `recipe list\|show\|check\|install\|capture` | Everything a workflow needs, as data: its custom nodes and every model with destination, size and sha256. `install` downloads what's missing (resumable, hash-verified), installs the nodes through Manager's CLI and drops the workflow into `data/user/default/workflows`. `capture NAME` writes a recipe from a workflow that already runs here. Gated downloads read `HF_TOKEN` / `CIVITAI_TOKEN`. See `recipes/README.md`. |
 
 An `install`, `update` and `run` hold a lock, so you can't change the install under a running ComfyUI.
 
@@ -158,12 +166,13 @@ user with access to your home directory. Install nodes you'd be willing to run a
 
 ## Not ported
 
-Left out on purpose; the upstream script has them if you want them: `status --watch`, `tune`
-(swap off, persistence mode, clock cap), `backup` / `restore`, `prune`, `recipe`, the patch list
-and the node list. Rollback is the git checkout (`.state/comfy.previous`), not an image tag.
+Left out on purpose; the upstream script has them if you want them: `tune` (swap off, persistence
+mode, clock cap: these need `sudo`), `prune` and image tags (there is no image), and the patch list
+and node list (a recipe installs nodes now, and Manager does it from the UI). Rollback is the git
+checkout (`.state/comfy.previous`).
 
 ## Status
 
-Written against upstream at `33e521b`. Tested on a real DGX Spark (GB10, driver 580.178, CUDA 13.0, 2026-11-16): fresh install including the sm_121 SageAttention build and the aarch64 onnxruntime wheel, a no-change re-run, `doctor`, and `run` serving the UI with SageAttention active. Not yet exercised there: `update` against a newer upstream, and generating an image.
+Written against upstream at `33e521b`. Tested on a real DGX Spark (GB10, driver 580.178, CUDA 13.0, 2026-11-16): fresh install including the sm_121 SageAttention build and the aarch64 onnxruntime wheel, a no-change re-run, `doctor`, and `run` serving the UI with SageAttention active. `update` to the newest release was run there too. Not yet exercised on the Spark: `service`, `backup`/`restore`, `recipe install`, and generating an image.
 
 MIT. Derived from spark-comfyui, copyright (c) 2026 Bjarke Bolding; see `LICENSE`.
