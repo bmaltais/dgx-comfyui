@@ -1,0 +1,103 @@
+# spark-comfyui-uv
+
+ComfyUI on the NVIDIA DGX Spark (GB10, sm_121), installed natively with [uv](https://docs.astral.sh/uv/)
+into **one folder**. One script, safe to re-run.
+
+It is a native port of [bjarkebolding/spark-comfyui](https://github.com/bjarkebolding/spark-comfyui)
+(MIT), which does the same inside a container. Same stack: cu130 PyTorch, SageAttention compiled for
+sm_121, GPU onnxruntime, the unified-memory patch.
+
+## Quick start
+
+```bash
+git clone https://github.com/bmaltais/spark-comfyui-uv.git comfyui   # the folder you want it in
+cd comfyui
+./spark-comfyui.sh install      # first run: ~15 min (torch download, SageAttention compile)
+./spark-comfyui.sh run          # UI at http://<spark-ip>:8188
+```
+
+Models go in `data/models/checkpoints` (and the other `data/models/*` folders).
+
+Needs a DGX Spark on DGX OS (r580 driver) with the CUDA 13.0 toolkit (`nvcc`), `git`, `curl`, `g++`,
+and `libgl1` + `libglib2.0-0t64`. `install` checks all of that and prints the `apt` line for what's
+missing. It never runs `sudo` itself.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `install` | Converges to the wanted state. Each part (uv, Python, torch, ComfyUI, requirements, SageAttention, onnxruntime, patch, Manager config, data dirs) is checked against what is really installed, and only a part that differs is fixed. A second run says "Nothing to do". |
+| `update` | Moves ComfyUI to the newest upstream (`COMFY_REF`), re-applies the patch, then runs `install`. A failed move rolls back to the previous commit; it is kept in `.state/comfy.previous`. |
+| `run [args]` | Verifies torch, onnxruntime and a live SageAttention kernel on the GPU, then launches ComfyUI. Extra args go to `main.py`. Refuses to launch with a broken attention kernel rather than quietly running slow. |
+| `doctor` | Read-only health report. Changes nothing. |
+
+An `install`, `update` and `run` hold a lock, so you can't change the install under a running ComfyUI.
+
+## What lives where
+
+Everything is under the folder you cloned into. Nothing is written to `~/.cache`, `~/.local` or the
+system Python.
+
+| Path | Contents |
+|---|---|
+| `bin/` | uv, only if the system has none |
+| `.python/`, `.venv/` | uv-managed Python 3.12 and the venv |
+| `ComfyUI/` | the git checkout (code only) |
+| `data/` | **your content**: `models/`, `custom_nodes/`, `input/`, `output/`, `user/` (workflows, Manager config). Passed to ComfyUI with `--base-directory`, so updates never touch it |
+| `.cache/` | uv, pip, Hugging Face, torch, Triton and CUDA kernel caches |
+| `build/` | SageAttention source |
+| `.state/` | lock, torch constraints, build stamps |
+
+To move or remove it, move or delete the folder. (`git` credentials and shell config in `$HOME` are
+not touched either way.)
+
+## Configuration
+
+Put `KEY = VALUE` lines in `spark-comfyui.conf` next to the script, or set them in the environment
+(the environment wins). Unknown keys are warned about.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `COMFY_REF` | `master` | Branch, tag or 40-char sha. A branch moves on `update`; a sha or tag is enforced by `install`. |
+| `BIND_ADDR` | `0.0.0.0` | Interface to listen on. ComfyUI has **no login**: use `127.0.0.1` plus an SSH tunnel unless the LAN is trusted. |
+| `PORT` | `8188` | |
+| `SPARK_ATTENTION` | `sage` | `sage`, `sdpa`, or `ck`. Anything but `sage` skips the SageAttention build. |
+| `SPARK_BF16`, `SPARK_BF16_VAE` | `1` | bf16 fast path. Set `SPARK_BF16_VAE = 0` for LTX-2.3 audio workflows. |
+| `SPARK_STATIC_VRAM` | `0` | `1` disables DynamicVRAM. |
+| `SPARK_RESERVE_VRAM` | unset | GB of unified memory to keep free. |
+| `TORCH_VERSION`, `TORCHVISION_VERSION`, `TORCHAUDIO_VERSION` | `2.14.0`, `0.29.0`, `2.11.0` | Pins. Edit them and run `install`; the venv follows. |
+| `SAGE_REF`, `SAGE_ARCH`, `ORT_WHEEL_URL`, `CUDA_HOME`, `TORCH_INDEX`, `COMFY_REPO`, `PYTHON_VERSION` | see script | Build pins and paths. |
+
+## How a re-run stays safe
+
+- Each part has a real check (an import, an installed version, a git sha, a live GPU kernel run), not
+  a "did this step run before" flag, so a half-finished or broken install is repaired by running
+  `install` again.
+- Torch is held at its pin through `UV_CONSTRAINT` / `PIP_CONSTRAINT`, so a custom node's
+  requirements can't replace it. `run` re-verifies torch and onnxruntime on every start and repairs
+  them if a node got through anyway.
+- Clones and the Manager config are written to a temporary name and renamed into place.
+- `update` removes the memory patch from `model_management.py` before moving the checkout and
+  re-applies it after, so git never sees a dirty tree. If the patch no longer fits the new ComfyUI,
+  it rolls back and says so.
+
+## The trade-off against the container
+
+Upstream's container runs custom nodes as non-root with all capabilities dropped and no view of your
+home. **A native install gives that up.** Every node you install through ComfyUI-Manager runs as your
+user with access to your home directory. Install nodes you'd be willing to run as a script.
+
+## Not ported
+
+Left out on purpose; the upstream script has them if you want them: `status --watch`, `tune`
+(swap off, persistence mode, clock cap), `backup` / `restore`, `prune`, `recipe`, the patch list
+and the node list. Rollback is the git checkout (`.state/comfy.previous`), not an image tag.
+
+## Status
+
+Written against upstream at `33e521b` and tested for the parts that don't need a Spark: lint, the
+patch against a real ComfyUI checkout (twice, parse-checked), and install / re-install / doctor on
+x86_64 with the GPU-specific steps skipped. **The sm_121 SageAttention build and the aarch64
+onnxruntime step have not been run on a real DGX Spark yet.** Report what you see.
+
+MIT. Derived from spark-comfyui, copyright (c) 2026 Bjarke Bolding; see `LICENSE`.

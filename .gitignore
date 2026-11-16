@@ -1,0 +1,10 @@
+# Everything the installer creates stays in this folder and out of git.
+/bin/
+/.python/
+/.venv/
+/.cache/
+/.state/
+/ComfyUI/
+/build/
+/data/
+/spark-comfyui.conf
