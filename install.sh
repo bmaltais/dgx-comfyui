@@ -3,13 +3,21 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/bmaltais/spark-comfyui-uv/main/install.sh | bash
 #
-# Installs into ~/comfyui. Pick another folder with:  ... | bash -s -- /path/to/folder
+# Installs where you run it: into the current folder if it is empty (or already a checkout of this
+# repo), otherwise into ./comfyui below it. Pick a folder with:  ... | bash -s -- /path/to/folder
 # Safe to run again: it updates this tool, then re-checks everything and fixes only what differs.
 # It never uses sudo. Read it first if you like; it only clones the repo and runs ./spark-comfyui.sh install.
 set -euo pipefail
 
 REPO="${SPARK_COMFYUI_REPO:-https://github.com/bmaltais/spark-comfyui-uv.git}"
-DIR="${1:-${SPARK_COMFYUI_DIR:-$HOME/comfyui}}"
+DIR="${1:-${SPARK_COMFYUI_DIR:-}}"
+if [[ -z "$DIR" ]]; then
+  if [[ -f "$PWD/spark-comfyui.sh" && -d "$PWD/.git" ]] || [[ -z "$(ls -A "$PWD" 2>/dev/null)" ]]; then
+    DIR="$PWD"
+  else
+    DIR="$PWD/comfyui"
+  fi
+fi
 
 die() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }

@@ -12,17 +12,20 @@ sm_121, GPU onnxruntime, the unified-memory patch.
 On the Spark (SSH in, or open a terminal on it):
 
 ```bash
+mkdir -p ~/comfyui && cd ~/comfyui     # or any folder you want it in
 curl -fsSL https://raw.githubusercontent.com/bmaltais/spark-comfyui-uv/main/install.sh | bash
 ```
 
-That clones this repo into `~/comfyui` and runs `./spark-comfyui.sh install`. First run takes about
+That installs into the folder you run it from if that folder is empty, otherwise into `./comfyui` below
+it (so `mkdir ~/comfyui && cd ~/comfyui` first if you want a specific place). It clones this repo there
+and runs `./spark-comfyui.sh install`. First run takes about
 15 minutes (PyTorch download, then a ~5 minute SageAttention compile). It ends with a one-line
-verdict. To use another folder: `... | bash -s -- /path/to/folder`.
+verdict. To name a folder explicitly: `... | bash -s -- /path/to/folder`.
 
 Then start it:
 
 ```bash
-cd ~/comfyui
+cd ~/comfyui                    # wherever you installed it
 ./spark-comfyui.sh run          # UI at http://<spark-ip>:8188
 ```
 
@@ -41,7 +44,7 @@ the page. Stop ComfyUI with Ctrl+C.
 and run it yourself:
 
 ```bash
-git clone https://github.com/bmaltais/spark-comfyui-uv.git ~/comfyui && cd ~/comfyui
+git clone https://github.com/bmaltais/spark-comfyui-uv.git comfyui && cd comfyui
 ./spark-comfyui.sh install
 ```
 
