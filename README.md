@@ -7,20 +7,59 @@ It is a native port of [bjarkebolding/spark-comfyui](https://github.com/bjarkebo
 (MIT), which does the same inside a container. Same stack: cu130 PyTorch, SageAttention compiled for
 sm_121, GPU onnxruntime, the unified-memory patch.
 
-## Quick start
+## Install on a DGX Spark
+
+On the Spark (SSH in, or open a terminal on it):
 
 ```bash
-git clone https://github.com/bmaltais/spark-comfyui-uv.git comfyui   # the folder you want it in
-cd comfyui
-./spark-comfyui.sh install      # first run: ~15 min (torch download, SageAttention compile)
+curl -fsSL https://raw.githubusercontent.com/bmaltais/spark-comfyui-uv/main/install.sh | bash
+```
+
+That clones this repo into `~/comfyui` and runs `./spark-comfyui.sh install`. First run takes about
+15 minutes (PyTorch download, then a ~5 minute SageAttention compile). It ends with a one-line
+verdict. To use another folder: `... | bash -s -- /path/to/folder`.
+
+Then start it:
+
+```bash
+cd ~/comfyui
 ./spark-comfyui.sh run          # UI at http://<spark-ip>:8188
 ```
 
-Models go in `data/models/checkpoints` (and the other `data/models/*` folders).
+Put models in `~/comfyui/data/models/checkpoints` (and the other `data/models/*` folders), then reload
+the page. Stop ComfyUI with Ctrl+C.
 
-Needs a DGX Spark on DGX OS (r580 driver) with the CUDA 13.0 toolkit (`nvcc`), `git`, `curl`, `g++`,
-and `libgl1` + `libglib2.0-0t64`. `install` checks all of that and prints the `apt` line for what's
-missing. It never runs `sudo` itself.
+**Update later:** run the same curl line again (it refreshes this tool and fixes whatever differs), or
+`./spark-comfyui.sh update` to also move ComfyUI to the newest upstream.
+
+**Check on it:** `./spark-comfyui.sh doctor` reports every part and changes nothing.
+
+**Running it for days:** start it inside `tmux` or `screen` so it survives you closing the SSH session.
+(There is no systemd service yet.)
+
+**Prefer to read before running?** The installer is [`install.sh`](install.sh), about 30 lines. Or clone
+and run it yourself:
+
+```bash
+git clone https://github.com/bmaltais/spark-comfyui-uv.git ~/comfyui && cd ~/comfyui
+./spark-comfyui.sh install
+```
+
+### Requirements
+
+
+`curl`, `g++`, `libgl1` and `libglib2.0-0t64`, which DGX OS ships. `install` checks all of it first
+and prints the exact `apt` line for anything missing. It never runs `sudo`.
+
+### If something fails
+
+| Message | Fix |
+|---|---|
+| `driver ... is older than r580` | Update DGX OS, reboot. |
+| `no CUDA toolkit (nvcc)` | `sudo apt install cuda-toolkit-13-0`, or set `CUDA_HOME` in `spark-comfyui.conf`. |
+| `missing libGL...` | The `sudo apt install ...` line it printed. |
+| `another install, update or run holds the lock` | ComfyUI is running; stop it first. |
+| Anything else | Re-run `install` (it resumes), then `doctor`, and open an issue with the output. |
 
 ## Commands
 
