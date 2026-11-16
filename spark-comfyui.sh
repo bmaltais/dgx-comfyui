@@ -41,7 +41,7 @@ load_conf
 : "${TORCH_VERSION:=2.14.0}" "${TORCHVISION_VERSION:=0.29.0}" "${TORCHAUDIO_VERSION:=2.11.0}"
 : "${TORCH_INDEX:=https://download.pytorch.org/whl/cu130}"
 : "${COMFY_REPO:=https://github.com/Comfy-Org/ComfyUI.git}"
-: "${COMFY_REF:=master}"                # branch, tag or 40-char sha
+: "${COMFY_REF:=latest}"                # latest (newest release tag), or a branch, tag or 40-char sha
 : "${SAGE_REF:=d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5}"
 : "${SAGE_ARCH:=12.1+PTX}"
 if [[ "$(uname -m)" == aarch64 ]]; then
@@ -196,20 +196,43 @@ PY
 }
 fix_tools() { uvpip install -q "$TOOLS_SPEC" ninja packaging wheel uv || return 1; }
 
-comfy_apply_ref() {   # move the checkout to COMFY_REF; the caller handles the patched file
-  git -C "$COMFY" fetch -q --tags origin
-  if git -C "$COMFY" rev-parse --verify -q "origin/$COMFY_REF" >/dev/null; then
-    git -C "$COMFY" checkout -q -B "$COMFY_REF" "origin/$COMFY_REF"
+# COMFY_REF=latest means the newest vX.Y.Z release tag upstream (not master, which runs ahead of releases).
+resolve_ref() {
+  local tag
+  if [[ "$COMFY_REF" != latest ]]; then printf '%s' "$COMFY_REF"; return 0; fi
+  tag="$(timeout 20 git ls-remote --tags --sort=-v:refname "$COMFY_REPO" 'v*' 2>/dev/null \
+    | sed 's#^.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n 1p || true)"
+  [[ -n "$tag" ]] || return 1
+  printf '%s' "$tag"
+}
+comfy_apply_ref() {   # move the checkout to the wanted ref; the caller handles the patched file
+  local ref; ref="$(resolve_ref)" || { warn "cannot look up the latest ComfyUI release (offline?)"; return 1; }
+  git -C "$COMFY" fetch -q --tags origin || return 1
+  if git -C "$COMFY" rev-parse --verify -q "origin/$ref" >/dev/null; then
+    git -C "$COMFY" checkout -q -B "$ref" "origin/$ref"
   else
-    git -C "$COMFY" checkout -q --detach "$COMFY_REF"
+    git -C "$COMFY" checkout -q --detach "$ref"
   fi
+}
+comfy_label() {   # "v0.45.4" for a release, else "master @ e9afbcc" ; plus the commit date
+  local t; t="$(git -C "$COMFY" describe --tags --exact-match 2>/dev/null || true)"
+  printf '%s (%s)' "${t:-$(git -C "$COMFY" rev-parse --abbrev-ref HEAD) @ $(git -C "$COMFY" rev-parse --short HEAD)}" \
+    "$(git -C "$COMFY" log -1 --format=%cs)"
 }
 chk_comfy() {
   [[ -d "$COMFY/.git" ]] || { DETAIL="not cloned"; return 1; }
-  DETAIL="ComfyUI $(git -C "$COMFY" rev-parse --short HEAD) ($(git -C "$COMFY" describe --tags --always 2>/dev/null))"
-  # A branch ref moves only on `update`; a sha or tag is a pin and install enforces it.
-  if [[ "$COMFY_REF" =~ ^[0-9a-f]{40}$ ]]; then
-    [[ "$(git -C "$COMFY" rev-parse HEAD)" == "$COMFY_REF" ]]
+  DETAIL="ComfyUI $(comfy_label)"
+  local want
+  if [[ "$COMFY_REF" == latest ]]; then
+    # A fresh install lands on the newest release; moving an existing one is `update`'s job.
+    want="$(resolve_ref || true)"
+    if [[ -n "$want" && "$(git -C "$COMFY" rev-parse HEAD)" != "$(git -C "$COMFY" rev-parse -q --verify "$want^{commit}" 2>/dev/null || true)" ]]; then
+      DETAIL+="; newer release $want exists: run ./spark-comfyui.sh update"
+    fi
+  elif [[ "$COMFY_REF" =~ ^[0-9a-f]{40}$ ]]; then
+    [[ "$(git -C "$COMFY" rev-parse HEAD)" == "$COMFY_REF" ]]   # an explicit sha is a pin: install enforces it
+  elif git -C "$COMFY" rev-parse -q --verify "refs/tags/$COMFY_REF" >/dev/null; then
+    [[ "$(git -C "$COMFY" rev-parse HEAD)" == "$(git -C "$COMFY" rev-parse "$COMFY_REF^{commit}")" ]]   # so is a tag
   fi
 }
 fix_comfy() {
@@ -242,10 +265,10 @@ move_comfy() {
 
 # ComfyUI's own requirements. uv no-ops when satisfied, so this runs every time and reports a change
 # only when the installed set really differs afterwards.
-step_requirements() {
+step_requirements() {   # optional arg: --upgrade, to move dependencies to the newest the release allows
   local before after
   before="$(uvpip freeze | sha256sum)"
-  uvpip install -q -r "$COMFY/requirements.txt" -r "$COMFY/manager_requirements.txt" -c "$STATE/constraints.txt"
+  uvpip install -q "$@" -r "$COMFY/requirements.txt" -r "$COMFY/manager_requirements.txt" -c "$STATE/constraints.txt"
   after="$(uvpip freeze | sha256sum)"
   if [[ "$before" == "$after" ]]; then ok "ComfyUI requirements already satisfied"; else did "ComfyUI requirements installed"; fi
 }
@@ -423,13 +446,24 @@ cmd_update() {
   acquire_lock -x
   [[ -d "$COMFY/.git" ]] || die "not installed yet: run ./spark-comfyui.sh install"
   setup_env
-  log "Updating ComfyUI to $COMFY_REF"
-  local before; before="$(git -C "$COMFY" rev-parse --short HEAD)"
+  log "Updating ComfyUI ($COMFY_REF)"
+  local before_sha before_label frontend_before
+  before_sha="$(git -C "$COMFY" rev-parse HEAD)"; before_label="$(comfy_label)"
+  frontend_before="$(dist_version comfyui-frontend-package)"
   move_comfy
-  if [[ "$before" == "$(git -C "$COMFY" rev-parse --short HEAD)" ]]; then ok "already at $before"; else did "ComfyUI $before -> $(git -C "$COMFY" rev-parse --short HEAD); previous kept in .state/comfy.previous"; fi
+  if [[ "$before_sha" == "$(git -C "$COMFY" rev-parse HEAD)" ]]; then ok "already at $before_label"
+  else did "ComfyUI $before_label -> $(comfy_label); previous commit kept in .state/comfy.previous"; fi
+  log "Dependencies"
+  step_requirements --upgrade   # torch stays at its pin through the constraints file
+  [[ "$frontend_before" == "$(dist_version comfyui-frontend-package)" ]] || info "frontend $frontend_before -> $(dist_version comfyui-frontend-package)"
   # Release the lock hold before converging: install reacquires it.
   exec 9>&-
   cmd_install
+  local rc=0
+  [[ -x "$ROOT/scripts/check-upstream.sh" ]] && { "$ROOT/scripts/check-upstream.sh" >/dev/null 2>&1 || rc=$?; }
+  if (( rc == 10 )); then
+    info "the upstream spark-comfyui project has changes for the GPU stack (torch, SageAttention pins): see scripts/check-upstream.sh"
+  fi
 }
 
 cmd_doctor() {
