@@ -281,6 +281,20 @@ step_requirements() {   # optional arg: --upgrade, to move dependencies to the n
   if [[ "$before" == "$after" ]]; then ok "ComfyUI requirements already satisfied"; else did "ComfyUI requirements installed"; fi
 }
 
+# A new ComfyUI release can move shared dependencies, so each custom node's requirements are installed
+# again against them (torch stays pinned by the constraints file). One node failing is a warning, not a stop.
+step_node_requirements() {
+  local f n failed=0 seen=0
+  for f in "$DATA"/custom_nodes/*/requirements.txt; do
+    [[ -f "$f" ]] || continue
+    seen=1; n="$(basename "$(dirname "$f")")"
+    uvpip install -q -r "$f" -c "$STATE/constraints.txt" || { warn "requirements of custom node $n did not install"; failed=1; }
+  done
+  if (( ! seen )); then info "no custom node has requirements"
+  elif (( failed )); then warn "some custom node requirements failed: those nodes may not load"
+  else ok "custom node requirements installed"; fi
+}
+
 sage_stamp() { printf '%s|torch %s|%s' "$SAGE_REF" "$(dist_version torch)" "$SAGE_ARCH"; }
 gate_sage() {
   "$PY" - <<'PY' >/dev/null 2>&1
@@ -470,15 +484,17 @@ cmd_update() {
   [[ -d "$COMFY/.git" ]] || die "not installed yet: run ./dgx-comfyui.sh install"
   setup_env
   log "Updating ComfyUI ($COMFY_REF)"
-  local before_sha before_label frontend_before
+  local before_sha before_label frontend_before templates_before
   before_sha="$(git -C "$COMFY" rev-parse HEAD)"; before_label="$(comfy_label)"
-  frontend_before="$(dist_version comfyui-frontend-package)"
+  frontend_before="$(dist_version comfyui-frontend-package)"; templates_before="$(dist_version comfyui-workflow-templates)"
   move_comfy
   if [[ "$before_sha" == "$(git -C "$COMFY" rev-parse HEAD)" ]]; then ok "already at $before_label"
   else did "ComfyUI $before_label -> $(comfy_label); previous commit kept in .state/comfy.previous"; fi
   log "Dependencies"
   step_requirements --upgrade   # torch stays at its pin through the constraints file
   [[ "$frontend_before" == "$(dist_version comfyui-frontend-package)" ]] || info "frontend $frontend_before -> $(dist_version comfyui-frontend-package)"
+  [[ "$templates_before" == "$(dist_version comfyui-workflow-templates)" ]] || info "workflow templates $templates_before -> $(dist_version comfyui-workflow-templates)"
+  step_node_requirements
   # Release the lock hold before converging: install reacquires it.
   exec 9>&-
   cmd_install
@@ -761,6 +777,7 @@ own (vm.swappiness above already does) — add --persist to make all of it perma
 }
 
 # ---- recipes (lib/recipes.sh, ported from upstream) ---------------------------------------
+# shellcheck disable=SC2034  # RECIPES_DIR is read by lib/recipes.sh
 LIB_DIR="$ROOT/lib"; RECIPES_DIR="$ROOT/recipes"
 hdr() { log "$@"; }
 resolve_mounts() { :; }
@@ -769,6 +786,7 @@ cmd_recipe() {
   [[ -x "$PY" && -d "$COMFY/.git" ]] || die "not installed yet: ./dgx-comfyui.sh install"
   command -v wget >/dev/null || die "wget is missing: sudo apt install wget"
   setup_env
+  # shellcheck source=lib/recipes.sh
   # shellcheck source=lib/recipes.sh
   source "$LIB_DIR/recipes.sh"
   _recipe_cmd "$@"
