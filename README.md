@@ -58,8 +58,8 @@ folders a symlink to it; `install` leaves a symlinked folder alone.
 of releases. Pin something else with `COMFY_REF` (see Configuration).
 
 **Update later:** `./dgx-comfyui.sh update` moves ComfyUI to the newest release, upgrades its Python
-dependencies to what that release allows (frontend package, Manager and so on; torch stays at its pin),
-re-applies the patch and re-checks everything. It prints the old and new version. Running the curl line
+dependencies to what that release allows (frontend package, workflow templates, Manager and so on; torch
+stays at its pin), installs each custom node's requirements again against them, re-applies the patch and re-checks everything. It prints the old and new version. Running the curl line
 again only refreshes this tool and repairs the install; it never moves ComfyUI to a newer release.
 `doctor` tells you when a newer release exists.
 
@@ -98,7 +98,7 @@ and prints the exact `apt` line for anything missing. It never runs `sudo` itsel
 | Command | What it does |
 |---|---|
 | `install` | Converges to the wanted state. Each part (uv, Python, torch, ComfyUI, requirements, SageAttention, onnxruntime, patch, Manager config, data dirs) is checked against what is really installed, and only a part that differs is fixed. A second run says "Nothing to do". |
-| `update` | Moves ComfyUI to the newest release (`COMFY_REF`), upgrades its dependencies, re-applies the patch, then runs `install`. A failed move rolls back to the previous commit, which is kept in `.state/comfy.previous`. Also notes when the upstream `spark-comfyui` project has GPU-stack changes to port (`scripts/check-upstream.sh`). |
+| `update` | Moves ComfyUI to the newest release (`COMFY_REF`), upgrades its dependencies (and each custom node's), re-applies the patch, then runs `install`. A failed move rolls back to the previous commit, which is kept in `.state/comfy.previous`. Also notes when the upstream `spark-comfyui` project has GPU-stack changes to port (`scripts/check-upstream.sh`). |
 | `run [args]` | Verifies torch, onnxruntime and a live SageAttention kernel on the GPU, then launches ComfyUI. Extra args go to `main.py`. Refuses to launch with a broken attention kernel rather than quietly running slow. |
 | `doctor [--json]` | Read-only health report. Changes nothing. |
 | `status [--watch [SEC] \| --json]` | One-page glance: running or not, URL, versions, newer release available, GPU, unified memory, disk, queue. `--watch` is a live dashboard with sparklines (temp, power, clock, load, memory, queue). Every sample goes to `.state/status.log`, the trail to read after a silent hard reboot. |
