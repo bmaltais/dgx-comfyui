@@ -51,6 +51,7 @@ _recipe_path() {
 _recipe_size() { numfmt --to=iec "$1" 2>/dev/null || printf '%sB' "$1"; }
 
 _recipe_list() {
+  if (( JSON )); then python3 -I "$LIB_DIR/recipe_json.py" list "$RECIPES_DIR"; return 0; fi
   [[ -d "$RECIPES_DIR" ]] || { info "no recipes directory ($RECIPES_DIR)"; return 0; }
   local json name parsed found=0
   hdr "Recipes"
@@ -79,6 +80,7 @@ _recipe_show() {
   json="$(_recipe_path "$name")"
   [[ -f "$json" ]] || die "no such recipe: $name (looked for $json)"
   parsed="$(_recipe_read "$json")" || die "recipe '$name' is not valid — see the error above"
+  if (( JSON )); then python3 -I "$LIB_DIR/recipe_json.py" show <<< "$parsed"; return 0; fi
 
   hdr "$name"
   local tag f1 f2 f3 f4 f5 total=0 nmodels=0
@@ -224,6 +226,31 @@ _recipe_render() {
     }'
 }
 
+# Ask the server about one entry: prints `ok`, `size LEN`, `gated VAR CODE`, `gated-set VAR CODE` (the
+# token is set but was refused), `gone CODE` or `net RC`. The text report and the JSON report both read it.
+_recipe_probe() {
+  local file dest url size sha out rc=0 code len var
+  IFS=$'\t' read -r file dest url size sha <<< "$1"
+  out="$(wget --spider --server-response --tries=1 --timeout=20 "$url" 2>&1)" || rc=$?
+  code="$(printf '%s\n' "$out" | grep -oE 'HTTP/[0-9.]+ [0-9]{3}' | tail -1 | awk '{print $2}')"
+  len="$(printf '%s\n' "$out" | grep -iE '^ *Content-Length:' | tail -1 | awk '{print $2}')"
+  case "${code:-none}" in
+    200|206)
+      if [[ -n "$len" && "$len" != "$size" ]]; then printf 'size %s\n' "$len"; else echo ok; fi ;;
+    401|403)
+      var=""
+      case "$url" in
+        https://huggingface.co/*) var=HF_TOKEN ;;
+        https://civitai.com/*)    var=CIVITAI_TOKEN ;;
+      esac
+      # A token that is set but not accepted reads as `gated-set`, so the text can say the token was refused.
+      if [[ -n "$var" && -z "${!var:-}" ]]; then printf 'gated %s %s\n' "$var" "$code"
+      else printf 'gated-set %s %s\n' "$var" "$code"; fi ;;
+    404|410) printf 'gone %s\n' "$code" ;;
+    *) printf 'net %s\n' "$rc" ;;
+  esac
+}
+
 # Ask the server about every model we are about to fetch, before fetching any
 # of them. A handful of HEAD requests beats discovering at 15 GB that the next
 # file is gated.
@@ -238,39 +265,30 @@ _recipe_render() {
 # Quiet when everything is fine; prints only problems. Returns non-zero if any.
 _recipe_preflight() {
   local -a bad=()
-  local entry file dest url size sha out rc code len var
+  local entry file dest url size sha verdict kind a b
   for entry in "$@"; do
     IFS=$'\t' read -r file dest url size sha <<< "$entry"
-    rc=0
-    out="$(wget --spider --server-response --tries=1 --timeout=20 "$url" 2>&1)" || rc=$?
-    code="$(printf '%s\n' "$out" | grep -oE 'HTTP/[0-9.]+ [0-9]{3}' | tail -1 | awk '{print $2}')"
-    len="$(printf '%s\n' "$out" | grep -iE '^ *Content-Length:' | tail -1 | awk '{print $2}')"
-    case "${code:-none}" in
-      200|206)
-        if [[ -n "$len" && "$len" != "$size" ]]; then
-          printf '  \033[1;31m[SIZE]\033[0m  %s\n           server serves %s, recipe says %s — the recipe is stale\n' \
-            "$file" "$(_recipe_size "$len")" "$(_recipe_size "$size")"
-          bad+=("$file")
-        fi ;;
-      401|403)
-        var=""
-        case "$url" in
-          https://huggingface.co/*) var=HF_TOKEN ;;
-          https://civitai.com/*)    var=CIVITAI_TOKEN ;;
-        esac
-        if [[ -n "$var" && -z "${!var:-}" ]]; then
-          printf '  \033[1;31m[GATED]\033[0m %s\n           HTTP %s. Accept the licence on the site, then set %s\n' \
-            "$file" "$code" "$var"
-        else
-          printf '  \033[1;31m[GATED]\033[0m %s\n           HTTP %s, and the token in use was not accepted\n' \
-            "$file" "$code"
-        fi
+    verdict="$(_recipe_probe "$entry")"
+    read -r kind a b <<< "$verdict"
+    case "$kind" in
+      ok) ;;
+      size)
+        printf '  \033[1;31m[SIZE]\033[0m  %s\n           server serves %s, recipe says %s — the recipe is stale\n' \
+          "$file" "$(_recipe_size "$a")" "$(_recipe_size "$size")"
         bad+=("$file") ;;
-      404|410)
-        printf '  \033[1;31m[GONE]\033[0m  %s\n           HTTP %s — the url in the recipe has rotted\n' "$file" "$code"
+      gated)
+        printf '  \033[1;31m[GATED]\033[0m %s\n           HTTP %s. Accept the licence on the site, then set %s\n' \
+          "$file" "$b" "$a"
+        bad+=("$file") ;;
+      gated-set)
+        printf '  \033[1;31m[GATED]\033[0m %s\n           HTTP %s, and the token in use was not accepted\n' \
+          "$file" "$b"
+        bad+=("$file") ;;
+      gone)
+        printf '  \033[1;31m[GONE]\033[0m  %s\n           HTTP %s — the url in the recipe has rotted\n' "$file" "$a"
         bad+=("$file") ;;
       *)
-        printf '  \033[1;31m[NET]\033[0m   %s\n           unreachable (wget exit %s)\n' "$file" "$rc"
+        printf '  \033[1;31m[NET]\033[0m   %s\n           unreachable (wget exit %s)\n' "$file" "$a"
         bad+=("$file") ;;
     esac
   done
@@ -313,6 +331,35 @@ _recipe_install_node() {
   done <<<"$after"
   if (( moved )) || _recipe_node_listed "$entry"; then rm -f "$logf"; return 0; fi
   tail -15 "$logf" | sed 's/^/     /' >&2; rm -f "$logf"; return 1
+}
+
+# check --json: the same questions as the text check (what is on disk, which sources answer, which nodes
+# are missing), as one JSON object. Downloads nothing and changes nothing.
+_recipe_check_json() {
+  local name="${1:-}"; shift || true
+  [[ -n "$name" ]] || die "usage: $0 recipe check NAME [--verify] --json"
+  local verify=0 arg
+  for arg in "$@"; do
+    case "$arg" in --verify) verify=1 ;; *) die "Unknown recipe check option: $arg (valid: --verify)" ;; esac
+  done
+  local json parsed
+  json="$(_recipe_path "$name")"
+  [[ -f "$json" ]] || die "no such recipe: $name (looked for $json)"
+  parsed="$(_recipe_read "$json")" || die "recipe '$name' is not valid — see the error above"
+  resolve_mounts
+  local states extra="" tag f1 f2 f3 f4 f5 f6 f7 verdict kind a b
+  states="$(python3 -I "$LIB_DIR/recipe_json.py" state "$(_mount_path models)" "$verify" <<< "$parsed")"
+  while IFS=$'\t' read -r tag f1 f2 f3 f4 f5 f6 f7; do
+    [[ "$tag" == STATE && "$f3" == missing ]] || continue
+    verdict="$(_recipe_probe "$f1"$'\t'"$f2"$'\t'"$f5"$'\t'"$f6"$'\t'"$f7")"
+    read -r kind a b <<< "$verdict"
+    extra+="PROBE"$'\t'"$f1"$'\t'"$kind"$'\t'"$a"$'\t'"$b"$'\n'
+  done <<< "$states"
+  while IFS=$'\t' read -r tag f1; do
+    [[ "$tag" == NODE ]] || continue
+    _recipe_node_listed "$f1" || extra+="MISSINGNODE"$'\t'"$f1"$'\n'
+  done <<< "$parsed"
+  printf '%s\n%s\n%s' "$parsed" "$states" "$extra" | python3 -I "$LIB_DIR/recipe_json.py" check
 }
 
 # check and install share one engine: install is check plus the actions, so
@@ -574,18 +621,29 @@ WORKFLOW is a saved workflow's name, or a path to a .json file."
 }
 
 _recipe_cmd() {
-  local sub="${1:-}"
+  local sub="${1:-}" a
   shift || true
+  # --json is read-only: list, show and check only. It is taken out of the arguments here.
+  JSON=0
+  local -a rest=()
+  for a in "$@"; do if [[ "$a" == --json ]]; then JSON=1; else rest+=("$a"); fi; done
+  set -- "${rest[@]}"
+  if (( JSON )); then
+    case "$sub" in
+      list|show|check) ;;
+      *) die "--json works with recipe list, show and check" ;;
+    esac
+  fi
   case "$sub" in
     list)     _recipe_list ;;
     show)     _recipe_show "$@" ;;
-    check)    _recipe_apply check "$@" ;;
+    check)    if (( JSON )); then _recipe_check_json "$@"; else _recipe_apply check "$@"; fi ;;
     install)  _recipe_apply install "$@" ;;
     capture)  _recipe_capture "$@" ;;
     ""|-h|--help)
-      echo "  $0 recipe list                      what is available"
-      echo "  $0 recipe show NAME                 models, nodes and flags"
-      echo "  $0 recipe check NAME [--verify]     what is missing, nothing downloaded"
+      echo "  $0 recipe list [--json]             what is available"
+      echo "  $0 recipe show NAME [--json]        models, nodes and flags"
+      echo "  $0 recipe check NAME [--verify] [--json]   what is missing, nothing downloaded"
       echo "  $0 recipe install NAME [--yes] [--force]"
       echo "  $0 recipe capture WORKFLOW --name NAME"
       echo
