@@ -231,7 +231,13 @@ _recipe_render() {
 _recipe_probe() {
   local file dest url size sha out rc=0 code len var
   IFS=$'\t' read -r file dest url size sha <<< "$1"
-  out="$(wget --spider --server-response --tries=1 --timeout=20 "$url" 2>&1)" || rc=$?
+  # The same token the download sends: without it a gated file answers 401 whether or not the token is good.
+  local -a auth=()
+  case "$url" in
+    https://huggingface.co/*) [[ -n "${HF_TOKEN:-}" ]] && auth=(--header="Authorization: Bearer $HF_TOKEN") ;;
+    https://civitai.com/*)    [[ -n "${CIVITAI_TOKEN:-}" ]] && auth=(--header="Authorization: Bearer $CIVITAI_TOKEN") ;;
+  esac
+  out="$(wget --spider --server-response --tries=1 --timeout=20 "${auth[@]}" "$url" 2>&1)" || rc=$?
   code="$(printf '%s\n' "$out" | grep -oE 'HTTP/[0-9.]+ [0-9]{3}' | tail -1 | awk '{print $2}')"
   len="$(printf '%s\n' "$out" | grep -iE '^ *Content-Length:' | tail -1 | awk '{print $2}')"
   case "${code:-none}" in

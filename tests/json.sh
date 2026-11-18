@@ -29,6 +29,7 @@ mk_install() {
 url="${@: -1}"
 case "$url" in
   */ok)    printf '  HTTP/1.1 200 OK\n  Content-Length: 10\n' >&2 ;;
+  */auth)  case "$*" in *"Authorization: Bearer tok"*) printf '  HTTP/1.1 200 OK\n  Content-Length: 10\n' >&2 ;; *) printf '  HTTP/1.1 401 Unauthorized\n' >&2; exit 8 ;; esac ;;
   */short) printf '  HTTP/1.1 200 OK\n  Content-Length: 99\n' >&2 ;;
   */gated) printf '  HTTP/1.1 401 Unauthorized\n' >&2; exit 8 ;;
   */gone)  printf '  HTTP/1.1 404 Not Found\n' >&2; exit 8 ;;
@@ -103,6 +104,18 @@ check "recipe check --json: the gated one names its token; downloads and readine
 out="$(run recipe check test --json --verify)"
 check "recipe check --json --verify: a right-sized file with the wrong hash is flagged" \
   '[m["state"] for m in d["models"] if m["file"]=="have.bin"]==["hash"]' "$out"
+
+# A gated file is probed with the token the download would send.
+python3 -I - "$I/recipes/gated.json" <<'PY'
+import json, sys
+json.dump({"schema": 1, "name": "Gated", "models": [{"file": "g.bin", "dest": "loras", "url": "https://huggingface.co/a/auth", "size": 10, "sha256": "0" * 64}]}, open(sys.argv[1], "w"))
+PY
+out="$(run recipe check gated --json)"
+check "recipe check --json: a gated file without a token names the token" '[m["source"] for m in d["models"]]==[{"ok":False,"problem":"gated","detail":["HF_TOKEN","401"]}]' "$out"
+out="$(HF_TOKEN=tok run recipe check gated --json)"
+check "recipe check --json: the same file with the right token is reachable" '[m["source"]["ok"] for m in d["models"]]==[True]' "$out"
+out="$(HF_TOKEN=wrong run recipe check gated --json)"
+check "recipe check --json: a wrong token is reported as refused" '[m["source"]["problem"] for m in d["models"]]==["gated-set"]' "$out"
 
 if run recipe install test --json >/dev/null 2>&1; then fail "--json is refused on install" "it ran"; else pass "--json is refused on install"; fi
 
