@@ -4,8 +4,8 @@
 #   ./dgx-comfyui.sh install            converge to the wanted state; safe to re-run, changes only what differs
 #   ./dgx-comfyui.sh update             newest ComfyUI release + its dependencies, then converge
 #   ./dgx-comfyui.sh run [..]           launch ComfyUI in the foreground (extra args go to main.py)
-#   ./dgx-comfyui.sh doctor             read-only health report, changes nothing
-#   ./dgx-comfyui.sh status [--watch [SEC]]   one-page glance, or a live dashboard with sparklines
+#   ./dgx-comfyui.sh doctor [--json]    read-only health report, changes nothing
+#   ./dgx-comfyui.sh status [--watch [SEC] | --json]   one-page glance, a live dashboard, or one JSON snapshot
 #   ./dgx-comfyui.sh service [--disable]      run ComfyUI in the background, restarted on crash and at boot
 #   ./dgx-comfyui.sh stop | logs [-f]         stop it; read its service log
 #   ./dgx-comfyui.sh backup [--with-output] [FILE] | restore FILE [--force]
@@ -489,7 +489,28 @@ cmd_update() {
   fi
 }
 
+# The doctor's report as data: the same checks, each message collected instead of printed.
+# The verdict is the `healthy` field; the exit status is 0 so a caller always gets the report.
+doctor_json() {
+  local items; items="$(mktemp)"
+  collect() { printf '%s\t%s\n' "$1" "$2" >> "$items"; }
+  log()  { collect log "$*"; }
+  ok()   { collect ok "$*"; }
+  did()  { CHANGES=$((CHANGES+1)); collect did "$*"; }
+  info() { collect info "$*"; }
+  warn() { collect warn "$*"; }
+  bad()  { PROBLEMS=$((PROBLEMS+1)); collect bad "$*"; }
+  summary() { :; }
+  doctor_body
+  python3 -I "$LIB_DIR/items_json.py" "$items" "$PROBLEMS" "$CHANGES"
+  rm -f "$items"
+}
+
 cmd_doctor() {
+  if [[ "${1:-}" == --json ]]; then doctor_json; return 0; fi
+  doctor_body
+}
+doctor_body() {
   MODE=doctor; setup_env
   log "Host"
   require host "host" || true
@@ -786,7 +807,46 @@ spark() {   # sparkline of the numbers given as arguments
   done
   printf '%s' "$out"
 }
+# One read-only snapshot as JSON, for a program that manages this install (schema 1). It writes nothing
+# in the install folder. Every field is present; a value that does not apply is null or "".
+status_json() {
+  local st pid="" rss="" svc_inst=0 svc_act=0 svc_en="" installed=0 tag="" commit="" dirty=0 branch="" unpushed="" newer=""
+  local ver="" cver="" comfy_commit="" disk="" models="" want
+  st="$(server_state)"; pid="$(server_pid || true)"
+  [[ -n "$pid" ]] && rss="$(awk '/^VmRSS:/{printf "%d", $2/1024}' "/proc/$pid/status" 2>/dev/null || true)"
+  if command -v systemctl >/dev/null && [[ -f "$UNIT_FILE" ]]; then
+    svc_inst=1
+    systemctl --user is-active --quiet "$UNIT" 2>/dev/null && svc_act=1
+    svc_en="$(systemctl --user is-enabled "$UNIT" 2>/dev/null || true)"
+  fi
+  if [[ -d "$ROOT/.git" ]]; then
+    tag="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
+    commit="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+    branch="$(git -C "$ROOT" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+    [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]] && dirty=1
+    unpushed="$(git -C "$ROOT" rev-list --count '@{u}..HEAD' 2>/dev/null || true)"
+  fi
+  if [[ -d "$COMFY/.git" ]]; then
+    installed=1
+    cver="$(comfy_label)"; comfy_commit="$(git -C "$COMFY" rev-parse --short HEAD 2>/dev/null || true)"
+    want="$(resolve_ref 2>/dev/null || true)"
+    if [[ "$COMFY_REF" == latest && -n "$want" && "$(git -C "$COMFY" describe --tags --exact-match 2>/dev/null || true)" != "$want" ]]; then newer="$want"; fi
+  fi
+  disk="$(df -B1 --output=avail "$ROOT" 2>/dev/null | tail -1 | tr -d ' ' || true)"
+  models="$(du -sb "$DATA/models" 2>/dev/null | cut -f1 || true)"
+  local queue_r="" queue_p=""
+  if [[ "$st" == up ]]; then read -r queue_r queue_p <<<"$(queue_counts)"; fi
+  python3 -I "$LIB_DIR/jsonout.py" schema:i=1 root:s="$ROOT" installed:b="$installed" \
+    tool.tag:s="$tag" tool.commit:s="$commit" tool.branch:s="$branch" tool.dirty:b="$dirty" tool.unpushed:n="$unpushed" \
+    comfy.version:s="$cver" comfy.commit:s="$comfy_commit" comfy.newer_release:s="$newer" \
+    torch:s="$(dist_version torch)" sageattention:s="$(dist_version sageattention)" \
+    state:s="$st" pid:n="$pid" rss_mib:n="$rss" port:i="$PORT" bind:s="$BIND_ADDR" \
+    queue.running:n="$queue_r" queue.pending:n="$queue_p" \
+    service.installed:b="$svc_inst" service.active:b="$svc_act" service.enabled:s="$svc_en" \
+    disk_free_bytes:n="$disk" models_bytes:n="$models"
+}
 cmd_status() {
+  if [[ "${1:-}" == --json ]]; then status_json; return 0; fi
   setup_env
   local watch=0 sec=3
   if [[ "${1:-}" == --watch ]]; then watch=1; [[ "${2:-}" =~ ^[0-9]+$ ]] && sec="$2"; fi

@@ -100,15 +100,35 @@ and prints the exact `apt` line for anything missing. It never runs `sudo` itsel
 | `install` | Converges to the wanted state. Each part (uv, Python, torch, ComfyUI, requirements, SageAttention, onnxruntime, patch, Manager config, data dirs) is checked against what is really installed, and only a part that differs is fixed. A second run says "Nothing to do". |
 | `update` | Moves ComfyUI to the newest release (`COMFY_REF`), upgrades its dependencies, re-applies the patch, then runs `install`. A failed move rolls back to the previous commit, which is kept in `.state/comfy.previous`. Also notes when the upstream `spark-comfyui` project has GPU-stack changes to port (`scripts/check-upstream.sh`). |
 | `run [args]` | Verifies torch, onnxruntime and a live SageAttention kernel on the GPU, then launches ComfyUI. Extra args go to `main.py`. Refuses to launch with a broken attention kernel rather than quietly running slow. |
-| `doctor` | Read-only health report. Changes nothing. |
-| `status [--watch [SEC]]` | One-page glance: running or not, URL, versions, newer release available, GPU, unified memory, disk, queue. `--watch` is a live dashboard with sparklines (temp, power, clock, load, memory, queue). Every sample goes to `.state/status.log`, the trail to read after a silent hard reboot. |
+| `doctor [--json]` | Read-only health report. Changes nothing. |
+| `status [--watch [SEC] \| --json]` | One-page glance: running or not, URL, versions, newer release available, GPU, unified memory, disk, queue. `--watch` is a live dashboard with sparklines (temp, power, clock, load, memory, queue). Every sample goes to `.state/status.log`, the trail to read after a silent hard reboot. |
 | `service [--disable]` | Background service (user systemd unit written to `~/.config/systemd/user/`, the one thing outside the folder). Also enables lingering so it survives logout and starts at boot; if that needs `sudo` it tells you the command. |
 | `stop` | Stops the service, or a foreground ComfyUI. |
 | `logs [-f]` | The service's log (journald). |
 | `backup [--with-output] [FILE]` | A small `.tgz` in `backups/`: workflows and settings (`data/user`), `data/input`, your `dgx-comfyui.conf`, the custom-node set (git URL and commit) and a list of your models. Models are listed, never archived. Safe while running. |
 | `restore FILE [--force]` | Installs if needed, puts the content back (existing files kept unless `--force`), re-clones custom nodes at their commits and lists models that are missing. |
 | `tune [--clock-cap MHZ] [--persist]` <br> `tune --revert` | Host stability for the Spark, the one command that uses `sudo` and changes the machine outside this folder: swap off (on unified memory a workload near the limit thrashes swap and freezes the box instead of getting a clean out-of-memory kill), `vm.swappiness=10`, driver persistence mode, and an optional clock cap (`--clock-cap 2100` stops the silent hard reboots some units get when the GPU jumps from idle to ~85 W). `--persist` adds a boot unit (`comfyui-tune.service`) so it survives reboots. `--revert` puts everything back: swap on, clocks unlocked, persistence off, the unit and the sysctl line removed. Each step is skipped if already in place, so a re-run asks for no password it doesn't need. `doctor` warns while swap is on. |
-| `recipe list\|show\|check\|install\|capture` | Everything a workflow needs, as data: its custom nodes and every model with destination, size and sha256. `install` downloads what's missing (resumable, hash-verified), installs the nodes through Manager's CLI and drops the workflow into `data/user/default/workflows`. `capture NAME` writes a recipe from a workflow that already runs here. Gated downloads read `HF_TOKEN` / `CIVITAI_TOKEN`. See `recipes/README.md`. |
+| `recipe list\|show\|check\|install\|capture` (`list`, `show`, `check` take `--json`) | Everything a workflow needs, as data: its custom nodes and every model with destination, size and sha256. `install` downloads what's missing (resumable, hash-verified), installs the nodes through Manager's CLI and drops the workflow into `data/user/default/workflows`. `capture NAME` writes a recipe from a workflow that already runs here. Gated downloads read `HF_TOKEN` / `CIVITAI_TOKEN`. See `recipes/README.md`. |
+
+### JSON output, for programs
+
+`status --json`, `doctor --json` and `recipe list|show|check --json` print one JSON object each, for a
+tool that manages this install (such as StartDGX). They are read-only, and `status --json` writes nothing
+in the install folder. Every object has `"schema": 1`; fields are only added within a schema.
+
+- `status --json`: `installed`, `root`, `state` (`stopped`, `starting`, `up`), `pid`, `rss_mib`, `port`,
+  `bind`, `queue`, `service` (`installed`, `active`, `enabled`), `comfy` (`version`, `commit`,
+  `newer_release`), `torch`, `sageattention`, `disk_free_bytes`, `models_bytes`, and `tool`: this
+  checkout's `tag` (empty when not on a tag), `commit`, `branch`, `dirty` (uncommitted changes) and
+  `unpushed` (commits not on its upstream, null when it has none).
+- `doctor --json`: `healthy`, `problems`, `changes` and `items` (`level` and `text` per message). The
+  verdict is in `healthy`; the exit status is 0 so a caller always gets the report.
+- `recipe list --json`, `recipe show NAME --json`: the recipes and one recipe's nodes, flags and models.
+- `recipe check NAME [--verify] --json`: each model's `state` (`have`, `missing`, `size`, `hash`), for a
+  missing one whether its source answers (`source.ok`, `source.problem`: `size`, `gated`, `gated-set`,
+  `gone`, `net`), each node's `installed`, `download_bytes` and `ready`. Downloads nothing.
+
+Tests for this: `tests/json.sh` (no GPU or network needed).
 
 An `install`, `update` and `run` hold a lock, so you can't change the install under a running ComfyUI.
 
